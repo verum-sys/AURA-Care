@@ -1,0 +1,8 @@
+{
+  "mcpServers": {
+    "guardian-voice-tester": {
+      "command": "node",
+      "args": ["mcp/voice-tester.mjs"]
+    }
+  }
+}

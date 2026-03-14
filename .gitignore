@@ -31,6 +31,7 @@ dist-ssr
 # Credentials files (never commit these)
 *.json
 !components.json
+!.mcp.json
 !postcss.config.js
 !tailwind.config.ts
 !eslint.config.js
