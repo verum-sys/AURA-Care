@@ -1,18 +1,17 @@
 import { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { Shield, Heart, Users, Copy, CheckCircle2, ArrowRight, Loader2, UserPlus, RefreshCw, ChevronRight, User } from 'lucide-react';
+import { Shield, Heart, Users, Copy, CheckCircle2, ArrowRight, Loader2, RefreshCw, User } from 'lucide-react';
 import { useApp } from '@/context/AppContext';
 import LanguageToggle from '@/components/LanguageToggle';
 import { toast } from '@/hooks/use-toast';
 
 const Index = () => {
   const navigate = useNavigate();
-  const { t, role, setRole, pairingCode, generatePairingCode, linkWithCode, linkedCaregivers, linkedSeniors, setActiveSenior, currentUserId, loading } = useApp();
+  const { t, role, setRole, pairingCode, generatePairingCode, linkWithCode, linkedCaregiver, linkedSenior, currentUserId, loading } = useApp();
   const [codeInput, setCodeInput] = useState('');
   const [codeError, setCodeError] = useState('');
   const [copied, setCopied] = useState(false);
   const [submitting, setSubmitting] = useState(false);
-  const [showAddNew, setShowAddNew] = useState(false);
 
   // Auto-generate pairing code for caregiver if they don't have one
   useEffect(() => {
@@ -60,9 +59,10 @@ const Index = () => {
       if (result.success) {
         toast({ title: t('Connected to caregiver!', 'देखभालकर्ता से जुड़ गए!') });
         navigate('/senior');
-      } else if (result.error === 'Already connected to this caregiver') {
-        toast({ title: t('Already connected!', 'पहले से जुड़े हुए हैं!') });
-        navigate('/senior');
+      } else if (result.error === 'You are already connected to a caregiver') {
+        setCodeError(t('You are already connected to a caregiver.', 'आप पहले से एक देखभालकर्ता से जुड़े हैं।'));
+      } else if (result.error === 'This caregiver is already connected to another loved one') {
+        setCodeError(t('This caregiver is already connected to another loved one.', 'यह देखभालकर्ता पहले से किसी और अपने से जुड़ा है।'));
       } else {
         setCodeError(t('Invalid code. Please check with your caregiver.', 'अमान्य कोड। कृपया अपने देखभालकर्ता से जाँच करें।'));
       }
@@ -121,13 +121,49 @@ const Index = () => {
     );
   }
 
-  // Step 2a: Caregiver — show patient list + add new patient
+  // Step 2a: Caregiver — show connected loved one or pairing code
   if (role === 'caregiver') {
-    const handlePatientClick = (seniorId: string) => {
-      setActiveSenior(seniorId);
-      navigate('/caregiver');
-    };
+    // If already paired, go straight to dashboard
+    if (linkedSenior) {
+      return (
+        <div className="min-h-screen bg-background flex flex-col items-center justify-center px-6 max-w-md mx-auto">
+          <div className="absolute top-5 right-5">
+            <LanguageToggle />
+          </div>
 
+          <div className="w-16 h-16 rounded-full gradient-primary flex items-center justify-center shadow-glow-primary mb-4 animate-slide-up">
+            <Users className="w-8 h-8 text-primary-foreground" />
+          </div>
+
+          <div className="w-full mb-6 animate-slide-up-delay-1">
+            <div className="bg-success/10 rounded-2xl p-4 border border-success/20 text-center">
+              <CheckCircle2 className="w-6 h-6 text-success mx-auto mb-2" />
+              <p className="font-bold text-foreground text-sm">
+                {t(`Connected to ${linkedSenior.seniorName}`, `${linkedSenior.seniorName} से जुड़े हैं`)}
+              </p>
+              <button
+                type="button"
+                onClick={() => navigate('/caregiver')}
+                className="mt-3 w-full elder-tile gradient-primary text-primary-foreground text-elder-lg py-4"
+              >
+                {t('Go to Dashboard', 'डैशबोर्ड पर जाएं')}
+                <ArrowRight className="w-5 h-5 ml-2" />
+              </button>
+            </div>
+          </div>
+
+          <button
+            type="button"
+            onClick={() => setRole(null)}
+            className="w-full text-center text-sm text-muted-foreground font-semibold py-2"
+          >
+            {t('← Go Back', '← वापस जाएं')}
+          </button>
+        </div>
+      );
+    }
+
+    // Not paired yet — show pairing code
     return (
       <div className="min-h-screen bg-background flex flex-col px-6 max-w-md mx-auto py-8">
         <div className="absolute top-5 right-5">
@@ -149,123 +185,61 @@ const Index = () => {
           </div>
         </div>
 
-        {/* My Patients */}
+        {/* No loved one connected */}
         <div className="mb-6 animate-slide-up-delay-1">
-          <div className="flex items-center gap-2 mb-3">
-            <Users className="w-5 h-5 text-primary" />
-            <h3 className="text-lg font-black text-foreground">
-              {t('My Patients', 'मेरे मरीज़')}
-            </h3>
-            <span className="ml-auto px-2 py-0.5 rounded-full bg-primary/10 text-primary text-xs font-bold">
-              {linkedSeniors.length}
-            </span>
+          <div className="bg-muted/50 rounded-2xl p-6 text-center border border-dashed border-muted-foreground/20">
+            <User className="w-10 h-10 text-muted-foreground mx-auto mb-2" />
+            <p className="text-sm font-semibold text-muted-foreground">
+              {t('No loved one connected yet', 'अभी कोई अपना नहीं जुड़ा')}
+            </p>
+            <p className="text-xs text-muted-foreground mt-1">
+              {t('Share the code below with your loved one to connect.', 'नीचे दिया गया कोड अपनों को दें।')}
+            </p>
           </div>
-
-          {linkedSeniors.length === 0 ? (
-            <div className="bg-muted/50 rounded-2xl p-6 text-center border border-dashed border-muted-foreground/20">
-              <User className="w-10 h-10 text-muted-foreground mx-auto mb-2" />
-              <p className="text-sm font-semibold text-muted-foreground">
-                {t('No patients connected yet', 'अभी कोई मरीज़ नहीं जुड़ा')}
-              </p>
-              <p className="text-xs text-muted-foreground mt-1">
-                {t('Tap "Add New Patient" below to get a pairing code.', 'नीचे "नया मरीज़ जोड़ें" पर टैप करें।')}
-              </p>
-            </div>
-          ) : (
-            <div className="space-y-2">
-              {linkedSeniors.map((link) => (
-                <button
-                  key={link.seniorId}
-                  type="button"
-                  onClick={() => handlePatientClick(link.seniorId)}
-                  className="w-full flex items-center gap-3 p-4 bg-card rounded-2xl border border-border hover:border-primary/30 shadow-card transition-all active:scale-[0.98]"
-                >
-                  <div className="w-11 h-11 rounded-full gradient-primary flex items-center justify-center text-lg font-bold text-primary-foreground">
-                    {link.seniorName.charAt(0).toUpperCase()}
-                  </div>
-                  <div className="flex-1 text-left">
-                    <p className="font-bold text-foreground">{link.seniorName}</p>
-                    <p className="text-xs text-muted-foreground">
-                      {t('Code:', 'कोड:')} {link.code}
-                    </p>
-                  </div>
-                  <ChevronRight className="w-5 h-5 text-muted-foreground" />
-                </button>
-              ))}
-            </div>
-          )}
         </div>
 
-        {/* Add New Patient */}
-        {!showAddNew ? (
+        {/* Pairing code */}
+        <div className="bg-card rounded-2xl p-5 border-2 border-primary/20 shadow-card space-y-4 animate-slide-up-delay-2">
+          <p className="text-sm text-muted-foreground font-semibold">
+            {t('Share this code with your loved one. They will enter it in their app to connect.', 'यह कोड अपनों को दें। वे इसे अपने ऐप में दर्ज करेंगे।')}
+          </p>
+
+          <div
+            onClick={handleCopyCode}
+            className="bg-muted/50 rounded-xl px-4 py-4 cursor-pointer hover:bg-muted transition-colors flex items-center justify-between"
+          >
+            <span className="text-3xl font-black text-primary tracking-[0.25em] font-mono">
+              {pairingCode || (
+                <Loader2 className="w-8 h-8 text-primary animate-spin" />
+              )}
+            </span>
+            {pairingCode && (
+              <div className="flex items-center gap-1 text-sm">
+                {copied ? (
+                  <span className="flex items-center gap-1 text-success font-bold">
+                    <CheckCircle2 className="w-4 h-4" />
+                    {t('Copied', 'कॉपी')}
+                  </span>
+                ) : (
+                  <span className="flex items-center gap-1 text-muted-foreground font-semibold">
+                    <Copy className="w-4 h-4" />
+                    {t('Copy', 'कॉपी')}
+                  </span>
+                )}
+              </div>
+            )}
+          </div>
+
           <button
             type="button"
-            onClick={() => { setShowAddNew(true); generatePairingCode(); }}
-            className="w-full flex items-center justify-center gap-2 px-4 py-4 rounded-2xl border-2 border-dashed border-primary/30 hover:border-primary/50 bg-primary/5 hover:bg-primary/10 transition-all text-primary font-bold text-lg animate-slide-up-delay-2"
+            onClick={() => generatePairingCode(true)}
+            className="w-full flex items-center justify-center gap-2 px-4 py-3 rounded-xl border-2 border-primary/20 hover:border-primary/40 bg-primary/5 hover:bg-primary/10 transition-all text-primary font-bold text-sm"
           >
-            <UserPlus className="w-6 h-6" />
-            {t('Add New Patient', 'नया मरीज़ जोड़ें')}
+            <RefreshCw className="w-4 h-4" />
+            {t('Generate New Code', 'नया कोड बनाएं')}
           </button>
-        ) : (
-          <div className="bg-card rounded-2xl p-5 border-2 border-primary/20 shadow-card space-y-4 animate-slide-up-delay-2">
-            <div className="flex items-center gap-2">
-              <UserPlus className="w-5 h-5 text-primary" />
-              <span className="font-bold text-foreground">{t('Add New Patient', 'नया मरीज़ जोड़ें')}</span>
-            </div>
+        </div>
 
-            <p className="text-sm text-muted-foreground font-semibold">
-              {t('Share this code with your patient. They will enter it in their app to connect.', 'यह कोड अपने मरीज़ को दें। वे इसे अपने ऐप में दर्ज करेंगे।')}
-            </p>
-
-            {/* Code display */}
-            <div
-              onClick={handleCopyCode}
-              className="bg-muted/50 rounded-xl px-4 py-4 cursor-pointer hover:bg-muted transition-colors flex items-center justify-between"
-            >
-              <span className="text-3xl font-black text-primary tracking-[0.25em] font-mono">
-                {pairingCode || (
-                  <Loader2 className="w-8 h-8 text-primary animate-spin" />
-                )}
-              </span>
-              {pairingCode && (
-                <div className="flex items-center gap-1 text-sm">
-                  {copied ? (
-                    <span className="flex items-center gap-1 text-success font-bold">
-                      <CheckCircle2 className="w-4 h-4" />
-                      {t('Copied', 'कॉपी')}
-                    </span>
-                  ) : (
-                    <span className="flex items-center gap-1 text-muted-foreground font-semibold">
-                      <Copy className="w-4 h-4" />
-                      {t('Copy', 'कॉपी')}
-                    </span>
-                  )}
-                </div>
-              )}
-            </div>
-
-            {/* Regenerate */}
-            <button
-              type="button"
-              onClick={() => generatePairingCode(true)}
-              className="w-full flex items-center justify-center gap-2 px-4 py-3 rounded-xl border-2 border-primary/20 hover:border-primary/40 bg-primary/5 hover:bg-primary/10 transition-all text-primary font-bold text-sm"
-            >
-              <RefreshCw className="w-4 h-4" />
-              {t('Generate New Code', 'नया कोड बनाएं')}
-            </button>
-
-            {/* Close */}
-            <button
-              type="button"
-              onClick={() => setShowAddNew(false)}
-              className="w-full text-center text-sm text-muted-foreground font-semibold py-1"
-            >
-              {t('Close', 'बंद करें')}
-            </button>
-          </div>
-        )}
-
-        {/* Go Back */}
         <button
           type="button"
           onClick={() => setRole(null)}
@@ -277,25 +251,25 @@ const Index = () => {
     );
   }
 
-  // Step 2b: Senior — show dashboard shortcut if already connected, plus code entry
+  // Step 2b: Senior — show dashboard shortcut if already connected, or code entry
   if (role === 'senior') {
-    return (
-      <div className="min-h-screen bg-background flex flex-col items-center justify-center px-6 max-w-md mx-auto">
-        <div className="absolute top-5 right-5">
-          <LanguageToggle />
-        </div>
+    // Already paired — go to dashboard
+    if (linkedCaregiver) {
+      return (
+        <div className="min-h-screen bg-background flex flex-col items-center justify-center px-6 max-w-md mx-auto">
+          <div className="absolute top-5 right-5">
+            <LanguageToggle />
+          </div>
 
-        <div className="w-16 h-16 rounded-full gradient-primary flex items-center justify-center shadow-glow-primary mb-4 animate-slide-up">
-          <Heart className="w-8 h-8 text-primary-foreground" />
-        </div>
+          <div className="w-16 h-16 rounded-full gradient-primary flex items-center justify-center shadow-glow-primary mb-4 animate-slide-up">
+            <Heart className="w-8 h-8 text-primary-foreground" />
+          </div>
 
-        {/* If already connected, show shortcut to dashboard */}
-        {linkedCaregivers.length > 0 && (
           <div className="w-full mb-6 animate-slide-up-delay-1">
             <div className="bg-success/10 rounded-2xl p-4 border border-success/20 text-center">
               <CheckCircle2 className="w-6 h-6 text-success mx-auto mb-2" />
               <p className="font-bold text-foreground text-sm">
-                {t(`Connected to ${linkedCaregivers.length} caregiver(s)`, `${linkedCaregivers.length} देखभालकर्ता से जुड़े हैं`)}
+                {t(`Connected to ${linkedCaregiver.caregiverName}`, `${linkedCaregiver.caregiverName} से जुड़े हैं`)}
               </p>
               <button
                 type="button"
@@ -306,28 +280,39 @@ const Index = () => {
                 <ArrowRight className="w-5 h-5 ml-2" />
               </button>
             </div>
-
-            <div className="flex items-center gap-3 my-4">
-              <div className="flex-1 h-px bg-border" />
-              <span className="text-xs text-muted-foreground font-semibold">{t('or add another caregiver', 'या और देखभालकर्ता जोड़ें')}</span>
-              <div className="flex-1 h-px bg-border" />
-            </div>
           </div>
-        )}
 
-        {linkedCaregivers.length === 0 && (
-          <>
-            <h2 className="text-elder-xl font-black text-foreground text-center animate-slide-up-delay-1">
-              {t('Enter Caregiver Code', 'देखभालकर्ता कोड दर्ज करें')}
-            </h2>
-            <p className="text-muted-foreground text-center font-semibold mt-2 max-w-xs animate-slide-up-delay-2">
-              {t(
-                'Ask your caregiver or doctor for the 6-digit code.',
-                'अपने देखभालकर्ता या डॉक्टर से 6 अंकों का कोड पूछें।'
-              )}
-            </p>
-          </>
-        )}
+          <button
+            type="button"
+            onClick={() => setRole(null)}
+            className="w-full text-center text-sm text-muted-foreground font-semibold py-2"
+          >
+            {t('← Go Back', '← वापस जाएं')}
+          </button>
+        </div>
+      );
+    }
+
+    // Not paired yet — code entry
+    return (
+      <div className="min-h-screen bg-background flex flex-col items-center justify-center px-6 max-w-md mx-auto">
+        <div className="absolute top-5 right-5">
+          <LanguageToggle />
+        </div>
+
+        <div className="w-16 h-16 rounded-full gradient-primary flex items-center justify-center shadow-glow-primary mb-4 animate-slide-up">
+          <Heart className="w-8 h-8 text-primary-foreground" />
+        </div>
+
+        <h2 className="text-elder-xl font-black text-foreground text-center animate-slide-up-delay-1">
+          {t('Enter Caregiver Code', 'देखभालकर्ता कोड दर्ज करें')}
+        </h2>
+        <p className="text-muted-foreground text-center font-semibold mt-2 max-w-xs animate-slide-up-delay-2">
+          {t(
+            'Ask your caregiver or doctor for the 6-digit code.',
+            'अपने देखभालकर्ता या डॉक्टर से 6 अंकों का कोड पूछें।'
+          )}
+        </p>
 
         <div className="w-full space-y-4 animate-slide-up-delay-3">
           <input

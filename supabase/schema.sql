@@ -1,6 +1,6 @@
 -- AURA Care Database Schema for Supabase
 -- Designed for Clerk authentication (uses Clerk user IDs as text PKs)
--- Supports many-to-many caregiver <-> senior relationships
+-- Supports one-to-one caregiver <-> senior relationships
 
 -- ============================================================
 -- CLEANUP: Drop old tables/triggers/functions from previous schema
@@ -49,8 +49,9 @@ CREATE TABLE pairing_codes (
 CREATE INDEX IF NOT EXISTS idx_pairing_codes_caregiver ON pairing_codes(caregiver_id);
 
 -- ============================================================
--- 3. CAREGIVER_SENIOR_LINKS — many-to-many junction table
+-- 3. CAREGIVER_SENIOR_LINKS — one-to-one pairing table
 --    Created when a senior claims a pairing code
+--    Each caregiver has at most one senior, each senior has at most one caregiver
 -- ============================================================
 CREATE TABLE caregiver_senior_links (
   id              UUID PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -60,7 +61,8 @@ CREATE TABLE caregiver_senior_links (
   senior_id       TEXT NOT NULL REFERENCES users(clerk_id) ON DELETE CASCADE,
   senior_name     TEXT NOT NULL DEFAULT 'Senior',
   linked_at       TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-  UNIQUE(caregiver_id, senior_id)
+  UNIQUE(caregiver_id),
+  UNIQUE(senior_id)
 );
 
 CREATE INDEX IF NOT EXISTS idx_links_caregiver ON caregiver_senior_links(caregiver_id);

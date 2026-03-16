@@ -1,4 +1,5 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
+import { useLocation } from 'react-router-dom';
 import { Mic, MicOff, X, Loader2, Volume2 } from 'lucide-react';
 import { useApp } from '@/context/AppContext';
 import { toast } from '@/hooks/use-toast';
@@ -9,11 +10,13 @@ type AgentState = 'idle' | 'listening' | 'processing' | 'responding' | 'error';
 
 const VoiceAssistantButton = () => {
   const {
-    t, language, role,
+    t, language, role, loading,
     sharedMedicines, setSharedMedicines, markMedicineTaken,
     wellbeing, setWellbeing, addAlert,
     refreshData,
   } = useApp();
+
+  const location = useLocation();
 
   const [agentState, setAgentState] = useState<AgentState>('idle');
   const [showPanel, setShowPanel] = useState(false);
@@ -27,6 +30,109 @@ const VoiceAssistantButton = () => {
   // Track active reminder timeouts so we can cancel them on unmount
   const reminderTimeoutsRef = useRef<ReturnType<typeof setTimeout>[]>([]);
   useEffect(() => () => { reminderTimeoutsRef.current.forEach(clearTimeout); }, []);
+
+  const speakResponse = useCallback((text: string) => {
+    if ('speechSynthesis' in window) {
+      window.speechSynthesis.cancel();
+      const utterance = new SpeechSynthesisUtterance(text);
+      utterance.lang = language === 'hi' ? 'hi-IN' : 'en-US';
+      utterance.rate = 0.9;
+      utterance.pitch = 1;
+      window.speechSynthesis.speak(utterance);
+    }
+  }, [language]);
+
+  // ─── Proactive greeting: once per session, on first senior page load ───
+  useEffect(() => {
+    // sessionStorage persists across reloads but clears when tab/browser closes
+    if (sessionStorage.getItem('aura_greeted') === '1') return;
+    if (role !== 'senior' || loading) return;
+    if (!location.pathname.startsWith('/senior')) return;
+
+    sessionStorage.setItem('aura_greeted', '1');
+
+    const timer = setTimeout(() => {
+      const msg = buildProactiveGreeting();
+      if (!msg) return;
+
+      setShowPanel(true);
+      setResponseText(msg);
+      setAgentState('responding');
+
+      if ('speechSynthesis' in window) {
+        window.speechSynthesis.cancel();
+        const utterance = new SpeechSynthesisUtterance(msg);
+        utterance.lang = language === 'hi' ? 'hi-IN' : 'en-US';
+        utterance.rate = 0.9;
+        utterance.pitch = 1;
+        utterance.onend = () => { startListening(); };
+        window.speechSynthesis.speak(utterance);
+      }
+    }, 1500);
+
+    return () => clearTimeout(timer);
+  }, [role, loading, location.pathname]);
+
+  /** Build a greeting with exactly 3 questions: medicines (time-aware), meal, caretaker call */
+  const buildProactiveGreeting = (): string => {
+    const now = new Date();
+    const hour = now.getHours();
+    const nowMinutes = hour * 60 + now.getMinutes(); // current time in total minutes
+
+    const greetEn = hour < 12 ? 'Good morning' : hour < 17 ? 'Good afternoon' : 'Good evening';
+    const greetHi = hour < 12 ? 'सुप्रभात' : hour < 17 ? 'नमस्कार' : 'शुभ संध्या';
+
+    const parts: { en: string; hi: string }[] = [];
+
+    // ── 1. Medicines whose scheduled time has already passed and are not taken ──
+    const overdue = sharedMedicinesRef.current.filter(med => {
+      if (med.taken) return false;
+      // timing can be "09:00" or "08:00, 20:00" — check if ANY slot is past
+      const slots = med.timing.split(',').map(s => s.trim());
+      return slots.some(slot => {
+        const [h, m] = slot.split(':').map(Number);
+        if (isNaN(h)) return false;
+        return (h * 60 + (m || 0)) <= nowMinutes;
+      });
+    });
+
+    if (overdue.length > 0) {
+      const names = overdue.map(m => m.name).join(', ');
+      const namesHi = overdue.map(m => m.nameHi || m.name).join(', ');
+      parts.push({
+        en: `You have ${overdue.length} medicine${overdue.length > 1 ? 's' : ''} due: ${names}. Did you take ${overdue.length > 1 ? 'them' : 'it'}?`,
+        hi: `आपकी ${overdue.length} दवाई का समय हो चुका है: ${namesHi}। क्या आपने ${overdue.length > 1 ? 'ये' : 'यह'} ली?`,
+      });
+    }
+
+    // ── 2. Closest past meal ──
+    // breakfast < 11, lunch 11-15, dinner >= 15 (ask about the one whose window has passed)
+    let mealEn: string;
+    let mealHi: string;
+    if (hour >= 15) {
+      mealEn = 'lunch'; mealHi = 'दोपहर का खाना';
+    } else if (hour >= 11) {
+      mealEn = 'breakfast'; mealHi = 'नाश्ता';
+    } else {
+      // Before 11am — still ask about breakfast (current meal)
+      mealEn = 'breakfast'; mealHi = 'नाश्ता';
+    }
+    parts.push({
+      en: `Have you had your ${mealEn}?`,
+      hi: `क्या आपने ${mealHi} खाया?`,
+    });
+
+    // ── 3. Call caretaker ──
+    parts.push({
+      en: 'Would you like to call your caretaker?',
+      hi: 'क्या आप अपने देखभालकर्ता को कॉल करना चाहेंगे?',
+    });
+
+    const fullEn = `${greetEn}! ${parts.map(p => p.en).join(' ')}`;
+    const fullHi = `${greetHi}! ${parts.map(p => p.hi).join(' ')}`;
+
+    return language === 'en' ? fullEn : fullHi;
+  };
 
   const {
     transcript,
@@ -329,17 +435,6 @@ const VoiceAssistantButton = () => {
     // Refresh data to sync
     await refreshData();
   }, [language, sharedMedicines, wellbeing, setSharedMedicines, markMedicineTaken, setWellbeing, addAlert, refreshData, t]);
-
-  const speakResponse = (text: string) => {
-    if ('speechSynthesis' in window) {
-      window.speechSynthesis.cancel();
-      const utterance = new SpeechSynthesisUtterance(text);
-      utterance.lang = language === 'hi' ? 'hi-IN' : 'en-US';
-      utterance.rate = 0.9;
-      utterance.pitch = 1;
-      window.speechSynthesis.speak(utterance);
-    }
-  };
 
   const handleToggle = () => {
     if (agentState === 'listening') {

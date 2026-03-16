@@ -1,5 +1,6 @@
 import { useState } from 'react';
-import { Pill, UtensilsCrossed, SmilePlus, Clock, Wifi, Battery, AlertTriangle, Copy, CheckCircle2, RefreshCw, Link, Users, User, ChevronRight } from 'lucide-react';
+import { useNavigate } from 'react-router-dom';
+import { Pill, UtensilsCrossed, SmilePlus, Clock, Wifi, Battery, AlertTriangle, Copy, CheckCircle2, RefreshCw, Link, User, Scan } from 'lucide-react';
 import CaregiverLayout from '@/components/CaregiverLayout';
 import { useApp } from '@/context/AppContext';
 import { caregiverOverview } from '@/data/dummyData';
@@ -10,11 +11,11 @@ const moodEmoji = { good: '😊', okay: '🙂', not_well: '😟' } as const;
 const moodLabels = { good: ['Good', 'अच्छा'], okay: ['Okay', 'ठीक'], not_well: ['Not Well', 'अच्छा नहीं'] } as const;
 
 const Overview = () => {
-  const { t, wellbeing, sharedMedicines, dynamicAlerts, pairingCode, generatePairingCode, activeSeniorId, activeSeniorName, linkedSeniors, setActiveSenior } = useApp();
+  const navigate = useNavigate();
+  const { t, wellbeing, sharedMedicines, dynamicAlerts, pairingCode, generatePairingCode, activeSeniorId, activeSeniorName, linkedSenior } = useApp();
   const [copied, setCopied] = useState(false);
 
-  // If there are linked seniors but none is selected yet, show patient list only
-  const showDashboard = activeSeniorId && linkedSeniors.length > 0;
+  const showDashboard = !!linkedSenior;
 
   const takenCount = sharedMedicines.filter(m => m.taken).length;
   const totalMeds = sharedMedicines.length;
@@ -35,127 +36,81 @@ const Overview = () => {
 
   return (
     <CaregiverLayout>
-      {/* Pairing Code Card — always visible */}
-      <div className="bg-card rounded-elder p-4 shadow-card border-2 border-primary/20 mb-4 animate-slide-up">
-        <div className="flex items-center gap-2 mb-3">
-          <Link className="w-5 h-5 text-primary" />
-          <span className="text-sm font-bold text-foreground">{t('Add New Patient', 'नया मरीज़ जोड़ें')}</span>
-        </div>
-
-        {/* Large code display */}
-        <div
-          onClick={handleCopyCode}
-          className="bg-muted/50 rounded-xl px-4 py-3 cursor-pointer hover:bg-muted transition-colors flex items-center justify-between"
-        >
-          <span className="text-3xl font-black text-primary tracking-[0.25em] font-mono">
-            {pairingCode || '------'}
-          </span>
-          <div className="flex items-center gap-1 text-sm">
-            {copied ? (
-              <span className="flex items-center gap-1 text-success font-bold">
-                <CheckCircle2 className="w-4 h-4" />
-                {t('Copied', 'कॉपी')}
-              </span>
-            ) : (
-              <span className="flex items-center gap-1 text-muted-foreground font-semibold">
-                <Copy className="w-4 h-4" />
-                {t('Copy', 'कॉपी')}
-              </span>
-            )}
+      {/* Pairing Code Card — only shown when no loved one connected */}
+      {!linkedSenior && (
+        <div className="bg-card rounded-elder p-4 shadow-card border-2 border-primary/20 mb-4 animate-slide-up">
+          <div className="flex items-center gap-2 mb-3">
+            <Link className="w-5 h-5 text-primary" />
+            <span className="text-sm font-bold text-foreground">{t('Connect a Loved One', 'अपनों को जोड़ें')}</span>
           </div>
-        </div>
 
-        <p className="text-xs text-muted-foreground mt-2">
-          {t('Share this code with a patient to connect them. They will enter it in their app.', 'यह कोड मरीज़ को दें। वे इसे अपने ऐप में दर्ज करेंगे।')}
-        </p>
-
-        {/* Regenerate button */}
-        <button
-          type="button"
-          onClick={() => { generatePairingCode(true); }}
-          className="mt-3 w-full flex items-center justify-center gap-2 px-4 py-2.5 rounded-xl border-2 border-primary/20 hover:border-primary/40 bg-primary/5 hover:bg-primary/10 transition-all text-primary font-bold text-sm"
-        >
-          <RefreshCw className="w-4 h-4" />
-          {t('Generate New Code', 'नया कोड बनाएं')}
-        </button>
-      </div>
-
-      {/* My Patients Section */}
-      <div className="mb-6 animate-slide-up-delay-1">
-        <div className="flex items-center gap-2 mb-3">
-          <Users className="w-5 h-5 text-primary" />
-          <h3 className="text-lg font-black text-foreground">
-            {t('My Patients', 'मेरे मरीज़')}
-          </h3>
-          <span className="ml-auto px-2 py-0.5 rounded-full bg-primary/10 text-primary text-xs font-bold">
-            {linkedSeniors.length}
-          </span>
-        </div>
-
-        {linkedSeniors.length === 0 ? (
-          <div className="bg-muted/50 rounded-elder p-6 text-center border border-dashed border-muted-foreground/20">
+          <div className="bg-muted/50 rounded-elder p-5 text-center border border-dashed border-muted-foreground/20 mb-3">
             <User className="w-10 h-10 text-muted-foreground mx-auto mb-2" />
             <p className="text-sm font-semibold text-muted-foreground">
-              {t('No patients connected yet', 'अभी कोई मरीज़ नहीं जुड़ा')}
-            </p>
-            <p className="text-xs text-muted-foreground mt-1">
-              {t('Share your pairing code above to connect a patient.', 'ऊपर अपना पेयरिंग कोड साझा करें मरीज़ जोड़ने के लिए।')}
+              {t('No loved one connected yet', 'अभी कोई अपना नहीं जुड़ा')}
             </p>
           </div>
-        ) : (
-          <div className="space-y-2">
-            {linkedSeniors.map((link) => {
-              const isActive = link.seniorId === activeSeniorId;
-              return (
-                <button
-                  key={link.seniorId}
-                  type="button"
-                  onClick={() => setActiveSenior(link.seniorId)}
-                  className={`w-full flex items-center gap-3 p-4 rounded-elder transition-all ${
-                    isActive
-                      ? 'bg-primary/10 border-2 border-primary shadow-card'
-                      : 'bg-card border border-border hover:border-primary/30 shadow-card'
-                  }`}
-                >
-                  <div className={`w-10 h-10 rounded-full flex items-center justify-center text-lg font-bold ${
-                    isActive ? 'gradient-primary text-primary-foreground' : 'bg-muted text-muted-foreground'
-                  }`}>
-                    {link.seniorName.charAt(0).toUpperCase()}
-                  </div>
-                  <div className="flex-1 text-left">
-                    <p className={`font-bold ${isActive ? 'text-primary' : 'text-foreground'}`}>
-                      {link.seniorName}
-                    </p>
-                    <p className="text-xs text-muted-foreground">
-                      {t('Connected', 'जुड़ा हुआ')} · {t('Code:', 'कोड:')} {link.code}
-                    </p>
-                  </div>
-                  {isActive ? (
-                    <span className="px-2 py-1 rounded-full bg-primary text-primary-foreground text-xs font-bold">
-                      {t('Active', 'सक्रिय')}
-                    </span>
-                  ) : (
-                    <ChevronRight className="w-5 h-5 text-muted-foreground" />
-                  )}
-                </button>
-              );
-            })}
-          </div>
-        )}
-      </div>
 
-      {/* Patient Dashboard — only shown when a patient is selected */}
+          {/* Large code display */}
+          <div
+            onClick={handleCopyCode}
+            className="bg-muted/50 rounded-xl px-4 py-3 cursor-pointer hover:bg-muted transition-colors flex items-center justify-between"
+          >
+            <span className="text-3xl font-black text-primary tracking-[0.25em] font-mono">
+              {pairingCode || '------'}
+            </span>
+            <div className="flex items-center gap-1 text-sm">
+              {copied ? (
+                <span className="flex items-center gap-1 text-success font-bold">
+                  <CheckCircle2 className="w-4 h-4" />
+                  {t('Copied', 'कॉपी')}
+                </span>
+              ) : (
+                <span className="flex items-center gap-1 text-muted-foreground font-semibold">
+                  <Copy className="w-4 h-4" />
+                  {t('Copy', 'कॉपी')}
+                </span>
+              )}
+            </div>
+          </div>
+
+          <p className="text-xs text-muted-foreground mt-2">
+            {t('Share this code with your loved one. They will enter it in their app to connect.', 'यह कोड अपनों को दें। वे इसे अपने ऐप में दर्ज करेंगे।')}
+          </p>
+
+          <button
+            type="button"
+            onClick={() => { generatePairingCode(true); }}
+            className="mt-3 w-full flex items-center justify-center gap-2 px-4 py-2.5 rounded-xl border-2 border-primary/20 hover:border-primary/40 bg-primary/5 hover:bg-primary/10 transition-all text-primary font-bold text-sm"
+          >
+            <RefreshCw className="w-4 h-4" />
+            {t('Generate New Code', 'नया कोड बनाएं')}
+          </button>
+        </div>
+      )}
+
+      {/* Loved One Dashboard — only shown when connected */}
       {showDashboard && (
         <>
           {/* Status Banner */}
-          <div className="gradient-hero rounded-elder p-5 text-primary-foreground mb-6 shadow-glow-primary animate-slide-up-delay-2">
-            <p className="text-sm font-semibold opacity-80">{t('Patient Dashboard', 'मरीज़ डैशबोर्ड')}</p>
+          <div className="gradient-hero rounded-elder p-5 text-primary-foreground mb-4 shadow-glow-primary animate-slide-up-delay-2">
+            <p className="text-sm font-semibold opacity-80">{t('Care Dashboard', 'देखभाल डैशबोर्ड')}</p>
             <h2 className="text-2xl font-black mt-1">{activeSeniorName}</h2>
             <div className="flex items-center gap-2 mt-2 opacity-80">
               <Clock className="w-4 h-4" />
               <span className="text-sm font-semibold">{t(`Last active: ${d.lastActive}`, `अंतिम सक्रिय: ${d.lastActiveHi}`)}</span>
             </div>
           </div>
+
+          {/* Scan Prescription Button */}
+          <button
+            type="button"
+            onClick={() => navigate('/caregiver/scan')}
+            className="w-full flex items-center justify-center gap-3 px-4 py-4 mb-6 rounded-elder gradient-primary text-primary-foreground font-bold text-lg shadow-glow-primary active:scale-[0.98] transition-all animate-slide-up-delay-2"
+          >
+            <Scan className="w-6 h-6" />
+            {t('Scan Prescription', 'प्रिस्क्रिप्शन स्कैन करें')}
+          </button>
 
           <div className="grid grid-cols-2 gap-3">
             {/* Medication Adherence */}

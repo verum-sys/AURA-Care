@@ -222,15 +222,23 @@ export async function claimPairingCode(
     return { success: false, error: 'Invalid or already used code' };
   }
 
-  // Check if link already exists between this caregiver and senior
-  const { data: existingLink } = await supabase
+  // One-to-one: check if this senior already has a caregiver
+  const { data: existingSeniorLink } = await supabase
     .from('caregiver_senior_links')
     .select('id')
-    .eq('caregiver_id', codeEntry.caregiver_id)
     .eq('senior_id', seniorId)
     .maybeSingle();
 
-  if (existingLink) return { success: false, error: 'Already connected to this caregiver' };
+  if (existingSeniorLink) return { success: false, error: 'You are already connected to a caregiver' };
+
+  // One-to-one: check if this caregiver already has a senior
+  const { data: existingCaregiverLink } = await supabase
+    .from('caregiver_senior_links')
+    .select('id')
+    .eq('caregiver_id', codeEntry.caregiver_id)
+    .maybeSingle();
+
+  if (existingCaregiverLink) return { success: false, error: 'This caregiver is already connected to another loved one' };
 
   // Create the link
   const { error: linkErr } = await supabase

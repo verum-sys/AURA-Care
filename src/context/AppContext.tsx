@@ -56,13 +56,12 @@ interface AppContextType {
   pairingCode: string | null;
   generatePairingCode: (forceNew?: boolean) => Promise<string>;
   linkWithCode: (code: string) => Promise<{ success: boolean; error?: string }>;
-  // Many-to-many links
-  linkedSeniors: PairingLink[];
-  linkedCaregivers: PairingLink[];
-  // Active senior selection (caregiver view)
+  // One-to-one links
+  linkedSenior: PairingLink | null;
+  linkedCaregiver: PairingLink | null;
+  // Active senior (derived from linkedSenior for caregiver view)
   activeSeniorId: string | null;
   activeSeniorName: string;
-  setActiveSenior: (seniorId: string) => void;
   // Shared medicines (scoped per senior)
   sharedMedicines: SharedMedicine[];
   setSharedMedicines: (meds: SharedMedicine[]) => Promise<void>;
@@ -129,9 +128,8 @@ export const AppProvider = ({ children }: { children: ReactNode }) => {
   const [role, setRoleState] = useState<Role>(null);
   const [loading, setLoading] = useState(true);
   const [pairingCode, setPairingCode] = useState<string | null>(null);
-  const [linkedSeniors, setLinkedSeniors] = useState<PairingLink[]>([]);
-  const [linkedCaregivers, setLinkedCaregivers] = useState<PairingLink[]>([]);
-  const [activeSeniorId, setActiveSeniorIdState] = useState<string | null>(null);
+  const [linkedSenior, setLinkedSenior] = useState<PairingLink | null>(null);
+  const [linkedCaregiver, setLinkedCaregiver] = useState<PairingLink | null>(null);
   const [sharedMedicines, setSharedMedicinesState] = useState<SharedMedicine[]>([]);
   const [wellbeing, setWellbeingState] = useState<WellbeingEntry | null>(null);
   const [dynamicAlerts, setDynamicAlertsState] = useState<AlertEntry[]>([]);
@@ -165,19 +163,15 @@ export const AppProvider = ({ children }: { children: ReactNode }) => {
         if (dbUser?.role === 'caregiver') {
           const seniors = await db.getLinkedSeniors(userId);
           if (cancelled) return;
-          setLinkedSeniors(seniors.map(toLink));
+          setLinkedSenior(seniors.length > 0 ? toLink(seniors[0]) : null);
 
           const code = await db.getActivePairingCode(userId);
           if (cancelled) return;
           setPairingCode(code);
-
-          if (seniors.length > 0) {
-            setActiveSeniorIdState(seniors[0].senior_id);
-          }
         } else if (dbUser?.role === 'senior') {
           const caregivers = await db.getLinkedCaregivers(userId);
           if (cancelled) return;
-          setLinkedCaregivers(caregivers.map(toLink));
+          setLinkedCaregiver(caregivers.length > 0 ? toLink(caregivers[0]) : null);
         }
       } catch (err) {
         console.error('AppContext init error:', err);
@@ -203,17 +197,14 @@ export const AppProvider = ({ children }: { children: ReactNode }) => {
         if (role === 'caregiver') {
           const seniors = await db.getLinkedSeniors(userId);
           if (cancelled) return;
-          setLinkedSeniors(seniors.map(toLink));
+          setLinkedSenior(seniors.length > 0 ? toLink(seniors[0]) : null);
           const code = await db.getActivePairingCode(userId);
           if (cancelled) return;
           setPairingCode(code);
-          if (seniors.length > 0) {
-            setActiveSeniorIdState(prev => prev || seniors[0].senior_id);
-          }
         } else if (role === 'senior') {
           const caregivers = await db.getLinkedCaregivers(userId);
           if (cancelled) return;
-          setLinkedCaregivers(caregivers.map(toLink));
+          setLinkedCaregiver(caregivers.length > 0 ? toLink(caregivers[0]) : null);
         }
       } catch (err) {
         console.error('Error loading links for role:', err);
@@ -223,6 +214,10 @@ export const AppProvider = ({ children }: { children: ReactNode }) => {
     loadLinks();
     return () => { cancelled = true; };
   }, [userId, role]);
+
+  // ─── Derived: activeSeniorId from one-to-one link ─────────
+  const activeSeniorId = linkedSenior?.seniorId ?? null;
+  const activeSeniorName = linkedSenior?.seniorName ?? '';
 
   // ─── Load scoped data when activeSeniorId or role changes ─
   const scopedSeniorId = role === 'senior' ? userId : activeSeniorId;
@@ -268,20 +263,17 @@ export const AppProvider = ({ children }: { children: ReactNode }) => {
       // Fetch linked data for the new role
       if (r === 'caregiver') {
         const seniors = await db.getLinkedSeniors(userId);
-        setLinkedSeniors(seniors.map(toLink));
+        setLinkedSenior(seniors.length > 0 ? toLink(seniors[0]) : null);
         const code = await db.getActivePairingCode(userId);
         setPairingCode(code);
-        if (seniors.length > 0 && !activeSeniorId) {
-          setActiveSeniorIdState(seniors[0].senior_id);
-        }
       } else if (r === 'senior') {
         const caregivers = await db.getLinkedCaregivers(userId);
-        setLinkedCaregivers(caregivers.map(toLink));
+        setLinkedCaregiver(caregivers.length > 0 ? toLink(caregivers[0]) : null);
       }
     } catch (err) {
       console.error('Error updating role:', err);
     }
-  }, [userId, activeSeniorId]);
+  }, [userId]);
 
   // ─── Generate pairing code ────────────────────────────
   const generatePairingCode = useCallback(async (forceNew = false): Promise<string> => {
@@ -305,7 +297,7 @@ export const AppProvider = ({ children }: { children: ReactNode }) => {
       const result = await db.claimPairingCode(code, userId, userName);
       if (result.success) {
         const caregivers = await db.getLinkedCaregivers(userId);
-        setLinkedCaregivers(caregivers.map(toLink));
+        setLinkedCaregiver(caregivers.length > 0 ? toLink(caregivers[0]) : null);
       }
       return result;
     } catch (err) {
@@ -313,13 +305,6 @@ export const AppProvider = ({ children }: { children: ReactNode }) => {
       return { success: false, error: 'Connection error' };
     }
   }, [userId, userName]);
-
-  // ─── Set active senior (caregiver view) ───────────────
-  const setActiveSenior = useCallback((seniorId: string) => {
-    setActiveSeniorIdState(seniorId);
-  }, []);
-
-  const activeSeniorName = linkedSeniors.find(l => l.seniorId === activeSeniorId)?.seniorName || '';
 
   // ─── Set shared medicines ─────────────────────────────
   const setSharedMedicines = useCallback(async (meds: SharedMedicine[]) => {
@@ -395,12 +380,12 @@ export const AppProvider = ({ children }: { children: ReactNode }) => {
     try {
       if (role === 'caregiver') {
         const seniors = await db.getLinkedSeniors(userId);
-        setLinkedSeniors(seniors.map(toLink));
+        setLinkedSenior(seniors.length > 0 ? toLink(seniors[0]) : null);
         const code = await db.getActivePairingCode(userId);
         setPairingCode(code);
       } else if (role === 'senior') {
         const caregivers = await db.getLinkedCaregivers(userId);
-        setLinkedCaregivers(caregivers.map(toLink));
+        setLinkedCaregiver(caregivers.length > 0 ? toLink(caregivers[0]) : null);
       }
       if (scopedSeniorId) {
         const [meds, well, alerts] = await Promise.all([
@@ -425,9 +410,8 @@ export const AppProvider = ({ children }: { children: ReactNode }) => {
   const resetRole = useCallback(() => {
     setRoleState(null);
     setPairingCode(null);
-    setActiveSeniorIdState(null);
-    setLinkedSeniors([]);
-    setLinkedCaregivers([]);
+    setLinkedSenior(null);
+    setLinkedCaregiver(null);
     setSharedMedicinesState([]);
     setWellbeingState(null);
     setDynamicAlertsState([]);
@@ -443,8 +427,8 @@ export const AppProvider = ({ children }: { children: ReactNode }) => {
       currentUserId: userId, currentUserName: userName,
       loading,
       pairingCode, generatePairingCode, linkWithCode,
-      linkedSeniors, linkedCaregivers,
-      activeSeniorId, activeSeniorName, setActiveSenior,
+      linkedSenior, linkedCaregiver,
+      activeSeniorId, activeSeniorName,
       sharedMedicines, setSharedMedicines, markMedicineTaken,
       wellbeing, setWellbeing,
       dynamicAlerts, addAlert,
