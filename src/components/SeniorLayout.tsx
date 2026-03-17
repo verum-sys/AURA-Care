@@ -1,6 +1,6 @@
 import { ReactNode } from 'react';
-import { useNavigate, useLocation } from 'react-router-dom';
-import { ArrowLeft, Shield } from 'lucide-react';
+import { useNavigate } from 'react-router-dom';
+import { ArrowLeft } from 'lucide-react';
 import VoiceAssistantButton from './VoiceAssistantButton';
 import LanguageToggle from './LanguageToggle';
 import { useApp } from '@/context/AppContext';
@@ -18,20 +18,20 @@ const SeniorLayout = ({ children, title, showBack = false }: SeniorLayoutProps) 
   return (
     <div className="min-h-screen bg-background flex flex-col max-w-md mx-auto">
       {/* Header */}
-      <header className="flex items-center justify-between px-5 py-4 bg-card shadow-card sticky top-0 z-40">
+      <header className="flex items-center justify-between px-5 py-3.5 bg-card/95 backdrop-blur-md border-b border-border sticky top-0 z-40">
         <div className="flex items-center gap-3">
           {showBack ? (
             <button onClick={() => navigate(-1)} className="p-2 -ml-2 rounded-full hover:bg-muted active:scale-95 transition-all">
               <ArrowLeft className="w-6 h-6 text-foreground" />
             </button>
           ) : (
-            <div className="w-9 h-9 rounded-full gradient-primary flex items-center justify-center">
-              <Shield className="w-5 h-5 text-primary-foreground" />
-            </div>
+            <img src="/logo.jpg" alt="Kin Care" className="h-8" />
           )}
-          <h1 className="text-lg font-extrabold text-foreground truncate">
-            {title || t('AURA Care', 'आरा केयर')}
-          </h1>
+          {(showBack || title) && (
+            <h1 className="text-lg font-extrabold text-foreground truncate">
+              {title || t('Kin Care', 'किन केयर')}
+            </h1>
+          )}
         </div>
         <LanguageToggle />
       </header>

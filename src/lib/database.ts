@@ -1,4 +1,4 @@
-// Supabase database service for AURA Care
+// Supabase database service for Kin Care
 // All operations use Clerk user IDs (text) as identifiers
 
 import { supabase } from './supabase';
@@ -62,6 +62,25 @@ export interface DBAlert {
   time_label: string;
   severity: 'critical' | 'warning' | 'info';
   is_read: boolean;
+  created_at: string;
+}
+
+export interface DBMedicineLog {
+  id: string;
+  senior_id: string;
+  medicine_id: string;
+  medicine_name: string;
+  dosage: string;
+  taken_date: string;   // 'YYYY-MM-DD'
+  taken_at: string;
+}
+
+export interface DBMealLog {
+  id: string;
+  senior_id: string;
+  meal_type: 'breakfast' | 'lunch' | 'dinner' | 'snack';
+  eaten: boolean;
+  log_date: string;     // 'YYYY-MM-DD'
   created_at: string;
 }
 
@@ -345,13 +364,71 @@ export async function upsertMedicines(
   return (data ?? []) as DBMedicine[];
 }
 
-export async function markMedicineTakenDB(medicineId: string) {
+export async function markMedicineTakenDB(medicineId: string, seniorId: string) {
+  const now = new Date();
+  const todayStr = now.toISOString().slice(0, 10); // 'YYYY-MM-DD'
+
+  // Update the medicine row
   const { error } = await supabase
     .from('medicines')
-    .update({ taken: true, taken_at: new Date().toISOString() })
+    .update({ taken: true, taken_at: now.toISOString() })
     .eq('id', medicineId);
 
   if (error) throw error;
+
+  // Get medicine details for the log
+  const { data: med } = await supabase
+    .from('medicines')
+    .select('name, dosage, senior_id')
+    .eq('id', medicineId)
+    .single();
+
+  // Insert into medicine_logs (upsert — one per medicine per day)
+  await supabase
+    .from('medicine_logs')
+    .upsert({
+      medicine_id: medicineId,
+      senior_id: seniorId || med?.senior_id || '',
+      medicine_name: med?.name || '',
+      dosage: med?.dosage || '',
+      taken_date: todayStr,
+      taken_at: now.toISOString(),
+    }, { onConflict: 'medicine_id,taken_date' });
+}
+
+// ─── Medicine History ────────────────────────────────────
+
+export async function getMedicineHistory(
+  seniorId: string,
+  days = 30
+): Promise<DBMedicineLog[]> {
+  const since = new Date();
+  since.setDate(since.getDate() - days);
+
+  const { data, error } = await supabase
+    .from('medicine_logs')
+    .select('*')
+    .eq('senior_id', seniorId)
+    .gte('taken_date', since.toISOString().slice(0, 10))
+    .order('taken_date', { ascending: false })
+    .order('taken_at', { ascending: true });
+
+  if (error) throw error;
+  return (data ?? []) as DBMedicineLog[];
+}
+
+/** Get today's logs for a senior — used to derive taken status */
+export async function getTodayMedicineLogs(seniorId: string): Promise<DBMedicineLog[]> {
+  const today = new Date().toISOString().slice(0, 10);
+
+  const { data, error } = await supabase
+    .from('medicine_logs')
+    .select('*')
+    .eq('senior_id', seniorId)
+    .eq('taken_date', today);
+
+  if (error) throw error;
+  return (data ?? []) as DBMedicineLog[];
 }
 
 // ─── Wellbeing ──────────────────────────────────────────
@@ -422,4 +499,74 @@ export async function insertAlert(
 
   if (error) throw error;
   return data as DBAlert;
+}
+
+// ─── Meal Logs ───────────────────────────────────────────
+
+export async function logMeal(
+  seniorId: string,
+  mealType: 'breakfast' | 'lunch' | 'dinner' | 'snack',
+  eaten: boolean
+): Promise<void> {
+  const today = new Date().toISOString().slice(0, 10);
+
+  await supabase
+    .from('meal_logs')
+    .upsert({
+      senior_id: seniorId,
+      meal_type: mealType,
+      eaten,
+      log_date: today,
+    }, { onConflict: 'senior_id,meal_type,log_date' });
+}
+
+export async function getTodayMealLogs(seniorId: string): Promise<DBMealLog[]> {
+  const today = new Date().toISOString().slice(0, 10);
+
+  const { data, error } = await supabase
+    .from('meal_logs')
+    .select('*')
+    .eq('senior_id', seniorId)
+    .eq('log_date', today);
+
+  if (error) throw error;
+  return (data ?? []) as DBMealLog[];
+}
+
+export async function getMealHistory(
+  seniorId: string,
+  days = 30
+): Promise<DBMealLog[]> {
+  const since = new Date();
+  since.setDate(since.getDate() - days);
+
+  const { data, error } = await supabase
+    .from('meal_logs')
+    .select('*')
+    .eq('senior_id', seniorId)
+    .gte('log_date', since.toISOString().slice(0, 10))
+    .order('log_date', { ascending: false });
+
+  if (error) throw error;
+  return (data ?? []) as DBMealLog[];
+}
+
+// ─── Wellbeing History ───────────────────────────────────
+
+export async function getWellbeingHistory(
+  seniorId: string,
+  days = 30
+): Promise<DBWellbeing[]> {
+  const since = new Date();
+  since.setDate(since.getDate() - days);
+
+  const { data, error } = await supabase
+    .from('wellbeing_checkins')
+    .select('*')
+    .eq('senior_id', seniorId)
+    .gte('created_at', since.toISOString())
+    .order('created_at', { ascending: false });
+
+  if (error) throw error;
+  return (data ?? []) as DBWellbeing[];
 }

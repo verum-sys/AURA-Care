@@ -154,4 +154,62 @@
   .animate-slide-up-delay-3 { animation: slideUp 0.5s ease-out 0.3s forwards; opacity: 0; }
   .animate-slide-up-delay-4 { animation: slideUp 0.5s ease-out 0.4s forwards; opacity: 0; }
   .animate-slide-up-delay-5 { animation: slideUp 0.5s ease-out 0.5s forwards; opacity: 0; }
+
+  /* Glass card */
+  .glass-card {
+    background: hsl(0 0% 100% / 0.7);
+    backdrop-filter: blur(12px);
+    -webkit-backdrop-filter: blur(12px);
+    border: 1px solid hsl(0 0% 100% / 0.5);
+    box-shadow: var(--shadow-card);
+  }
+
+  /* Stat card — icon circle background */
+  .stat-icon-bg {
+    @apply w-10 h-10 rounded-xl flex items-center justify-center;
+  }
+
+  /* Progress ring */
+  .progress-ring-bg { stroke: hsl(var(--muted)); }
+  .progress-ring-fill {
+    stroke: hsl(var(--primary));
+    stroke-linecap: round;
+    transition: stroke-dashoffset 1s ease-out;
+  }
+
+  /* Gradient text */
+  .text-gradient-primary {
+    background: var(--gradient-primary);
+    -webkit-background-clip: text;
+    -webkit-text-fill-color: transparent;
+    background-clip: text;
+  }
+
+  /* Floating action tile for senior */
+  .action-tile {
+    @apply relative overflow-hidden rounded-2xl p-5 flex items-center gap-4 transition-all duration-200 active:scale-[0.97];
+    box-shadow: var(--shadow-card);
+  }
+  .action-tile:hover { box-shadow: var(--shadow-elevated); }
+  .action-tile::after {
+    content: '';
+    position: absolute;
+    top: 0; right: 0;
+    width: 80px; height: 80px;
+    border-radius: 50%;
+    opacity: 0.08;
+    transform: translate(30%, -30%);
+    background: currentColor;
+  }
+
+  /* Shimmer highlight on cards */
+  @keyframes shimmer {
+    0% { background-position: -200% 0; }
+    100% { background-position: 200% 0; }
+  }
+  .shimmer-highlight {
+    background: linear-gradient(90deg, transparent 0%, hsl(0 0% 100% / 0.4) 50%, transparent 100%);
+    background-size: 200% 100%;
+    animation: shimmer 3s ease-in-out infinite;
+  }
 }

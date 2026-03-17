@@ -176,7 +176,7 @@ Prescription: ${ocrText}`;
             'Authorization': `Bearer ${apiKey}`,
             'Content-Type': 'application/json',
             'HTTP-Referer': window.location.origin,
-            'X-Title': 'AURA Care',
+            'X-Title': 'Kin Care',
         },
         body: JSON.stringify({
             model,

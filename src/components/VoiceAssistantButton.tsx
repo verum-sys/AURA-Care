@@ -3,6 +3,7 @@ import { useLocation } from 'react-router-dom';
 import { Mic, MicOff, X, Loader2, Volume2 } from 'lucide-react';
 import { useApp } from '@/context/AppContext';
 import { toast } from '@/hooks/use-toast';
+import * as db from '@/lib/database';
 import { useSpeechRecognition } from '@/hooks/useSpeechRecognition';
 import { processVoiceCommand, AgentAction } from '@/lib/voiceAgent';
 
@@ -10,7 +11,7 @@ type AgentState = 'idle' | 'listening' | 'processing' | 'responding' | 'error';
 
 const VoiceAssistantButton = () => {
   const {
-    t, language, role, loading,
+    t, language, role, loading, currentUserId,
     sharedMedicines, setSharedMedicines, markMedicineTaken,
     wellbeing, setWellbeing, addAlert,
     refreshData,
@@ -45,11 +46,11 @@ const VoiceAssistantButton = () => {
   // ─── Proactive greeting: once per session, on first senior page load ───
   useEffect(() => {
     // sessionStorage persists across reloads but clears when tab/browser closes
-    if (sessionStorage.getItem('aura_greeted') === '1') return;
+    if (sessionStorage.getItem('kincare_greeted') === '1') return;
     if (role !== 'senior' || loading) return;
     if (!location.pathname.startsWith('/senior')) return;
 
-    sessionStorage.setItem('aura_greeted', '1');
+    sessionStorage.setItem('kincare_greeted', '1');
 
     const timer = setTimeout(() => {
       const msg = buildProactiveGreeting();
@@ -280,6 +281,13 @@ const VoiceAssistantButton = () => {
 
       case 'log_meal': {
         const { mealType } = action.params;
+        // Persist to DB
+        if (currentUserId && mealType) {
+          const mt = mealType.toLowerCase() as 'breakfast' | 'lunch' | 'dinner' | 'snack';
+          if (['breakfast', 'lunch', 'dinner', 'snack'].includes(mt)) {
+            await db.logMeal(currentUserId, mt, true);
+          }
+        }
         toast({
           title: t('Meal Logged', 'भोजन दर्ज'),
           description: t(

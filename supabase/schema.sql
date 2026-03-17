@@ -126,6 +126,44 @@ CREATE TABLE alerts (
 CREATE INDEX IF NOT EXISTS idx_alerts_senior ON alerts(senior_id);
 
 -- ============================================================
+-- 7. MEDICINE_LOGS — permanent history of every medicine take
+--    One row per medicine per day. Never deleted.
+-- ============================================================
+DROP TABLE IF EXISTS medicine_logs CASCADE;
+
+CREATE TABLE medicine_logs (
+  id            UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  senior_id     TEXT NOT NULL REFERENCES users(clerk_id) ON DELETE CASCADE,
+  medicine_id   UUID NOT NULL REFERENCES medicines(id) ON DELETE CASCADE,
+  medicine_name TEXT NOT NULL,
+  dosage        TEXT NOT NULL DEFAULT '',
+  taken_date    DATE NOT NULL DEFAULT CURRENT_DATE,
+  taken_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  UNIQUE(medicine_id, taken_date)   -- one log per medicine per day
+);
+
+CREATE INDEX IF NOT EXISTS idx_medicine_logs_senior ON medicine_logs(senior_id);
+CREATE INDEX IF NOT EXISTS idx_medicine_logs_date ON medicine_logs(senior_id, taken_date DESC);
+
+-- ============================================================
+-- 8. MEAL_LOGS — permanent history of meal check-ins
+-- ============================================================
+DROP TABLE IF EXISTS meal_logs CASCADE;
+
+CREATE TABLE meal_logs (
+  id          UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  senior_id   TEXT NOT NULL REFERENCES users(clerk_id) ON DELETE CASCADE,
+  meal_type   TEXT NOT NULL CHECK (meal_type IN ('breakfast', 'lunch', 'dinner', 'snack')),
+  eaten       BOOLEAN NOT NULL DEFAULT TRUE,
+  log_date    DATE NOT NULL DEFAULT CURRENT_DATE,
+  created_at  TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  UNIQUE(senior_id, meal_type, log_date)  -- one log per meal per day
+);
+
+CREATE INDEX IF NOT EXISTS idx_meal_logs_senior ON meal_logs(senior_id);
+CREATE INDEX IF NOT EXISTS idx_meal_logs_date ON meal_logs(senior_id, log_date DESC);
+
+-- ============================================================
 -- ROW LEVEL SECURITY
 -- Using permissive "public" policies for MVP/demo.
 -- In production, replace with Clerk JWT verification.
@@ -136,6 +174,8 @@ ALTER TABLE caregiver_senior_links ENABLE ROW LEVEL SECURITY;
 ALTER TABLE medicines ENABLE ROW LEVEL SECURITY;
 ALTER TABLE wellbeing_checkins ENABLE ROW LEVEL SECURITY;
 ALTER TABLE alerts ENABLE ROW LEVEL SECURITY;
+ALTER TABLE medicine_logs ENABLE ROW LEVEL SECURITY;
+ALTER TABLE meal_logs ENABLE ROW LEVEL SECURITY;
 
 -- Users
 CREATE POLICY "users_all" ON users FOR ALL USING (true) WITH CHECK (true);
@@ -154,6 +194,12 @@ CREATE POLICY "wellbeing_all" ON wellbeing_checkins FOR ALL USING (true) WITH CH
 
 -- Alerts
 CREATE POLICY "alerts_all" ON alerts FOR ALL USING (true) WITH CHECK (true);
+
+-- Medicine logs
+CREATE POLICY "medicine_logs_all" ON medicine_logs FOR ALL USING (true) WITH CHECK (true);
+
+-- Meal logs
+CREATE POLICY "meal_logs_all" ON meal_logs FOR ALL USING (true) WITH CHECK (true);
 
 -- ============================================================
 -- TRIGGER: auto-update updated_at on users

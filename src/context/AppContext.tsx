@@ -62,10 +62,13 @@ interface AppContextType {
   // Active senior (derived from linkedSenior for caregiver view)
   activeSeniorId: string | null;
   activeSeniorName: string;
-  // Shared medicines (scoped per senior)
+  // Shared medicines (scoped per senior, taken resets daily)
   sharedMedicines: SharedMedicine[];
   setSharedMedicines: (meds: SharedMedicine[]) => Promise<void>;
   markMedicineTaken: (id: string) => Promise<void>;
+  // Medicine history
+  medicineHistory: db.DBMedicineLog[];
+  loadMedicineHistory: () => Promise<void>;
   // Wellbeing (scoped per senior)
   wellbeing: WellbeingEntry | null;
   setWellbeing: (entry: WellbeingEntry) => Promise<void>;
@@ -93,7 +96,16 @@ function toLink(l: db.DBLink): PairingLink {
 }
 
 // Convert DB medicine to app SharedMedicine
-function toMedicine(m: db.DBMedicine): SharedMedicine {
+// `taken` is true only if taken_at is today — automatic daily reset
+function toMedicine(m: db.DBMedicine, todayLogs?: Set<string>): SharedMedicine {
+  let takenToday = false;
+  if (todayLogs) {
+    // Use the logs set for accuracy
+    takenToday = todayLogs.has(m.id);
+  } else if (m.taken && m.taken_at) {
+    // Fallback: check if taken_at date matches today
+    takenToday = new Date(m.taken_at).toDateString() === new Date().toDateString();
+  }
   return {
     id: m.id,
     name: m.name,
@@ -102,7 +114,7 @@ function toMedicine(m: db.DBMedicine): SharedMedicine {
     frequency: m.frequency,
     timing: m.timing,
     beforeAfterFood: m.before_after_food,
-    taken: m.taken,
+    taken: takenToday,
     uploadedBy: m.uploaded_by ?? undefined,
   };
 }
@@ -133,6 +145,7 @@ export const AppProvider = ({ children }: { children: ReactNode }) => {
   const [sharedMedicines, setSharedMedicinesState] = useState<SharedMedicine[]>([]);
   const [wellbeing, setWellbeingState] = useState<WellbeingEntry | null>(null);
   const [dynamicAlerts, setDynamicAlertsState] = useState<AlertEntry[]>([]);
+  const [medicineHistory, setMedicineHistory] = useState<db.DBMedicineLog[]>([]);
 
   const initDone = useRef(false);
 
@@ -228,14 +241,16 @@ export const AppProvider = ({ children }: { children: ReactNode }) => {
     let cancelled = false;
     const loadScopedData = async () => {
       try {
-        const [meds, well, alerts] = await Promise.all([
+        const [meds, well, alerts, todayLogs] = await Promise.all([
           db.getMedicines(scopedSeniorId),
           db.getLatestWellbeing(scopedSeniorId),
           db.getAlerts(scopedSeniorId),
+          db.getTodayMedicineLogs(scopedSeniorId),
         ]);
         if (cancelled) return;
 
-        setSharedMedicinesState(meds.map(toMedicine));
+        const todayLogSet = new Set(todayLogs.map(l => l.medicine_id));
+        setSharedMedicinesState(meds.map(m => toMedicine(m, todayLogSet)));
         setWellbeingState(well ? {
           mood: well.mood,
           painArea: well.pain_area,
@@ -332,15 +347,27 @@ export const AppProvider = ({ children }: { children: ReactNode }) => {
 
   // ─── Mark medicine taken ──────────────────────────────
   const markMedicineTaken = useCallback(async (id: string) => {
+    if (!scopedSeniorId) return;
     try {
-      await db.markMedicineTakenDB(id);
+      await db.markMedicineTakenDB(id, scopedSeniorId);
       setSharedMedicinesState(prev =>
         prev.map(m => m.id === id ? { ...m, taken: true } : m)
       );
     } catch (err) {
       console.error('Error marking medicine taken:', err);
     }
-  }, []);
+  }, [scopedSeniorId]);
+
+  // ─── Load medicine history ───────────────────────────
+  const loadMedicineHistory = useCallback(async () => {
+    if (!scopedSeniorId) return;
+    try {
+      const logs = await db.getMedicineHistory(scopedSeniorId, 30);
+      setMedicineHistory(logs);
+    } catch (err) {
+      console.error('Error loading medicine history:', err);
+    }
+  }, [scopedSeniorId]);
 
   // ─── Set wellbeing ────────────────────────────────────
   const setWellbeing = useCallback(async (entry: WellbeingEntry) => {
@@ -415,6 +442,7 @@ export const AppProvider = ({ children }: { children: ReactNode }) => {
     setSharedMedicinesState([]);
     setWellbeingState(null);
     setDynamicAlertsState([]);
+    setMedicineHistory([]);
     initDone.current = false;
     if (userId) {
       db.updateUserRole(userId, null).catch(console.error);
@@ -430,6 +458,7 @@ export const AppProvider = ({ children }: { children: ReactNode }) => {
       linkedSenior, linkedCaregiver,
       activeSeniorId, activeSeniorName,
       sharedMedicines, setSharedMedicines, markMedicineTaken,
+      medicineHistory, loadMedicineHistory,
       wellbeing, setWellbeing,
       dynamicAlerts, addAlert,
       refreshData,

@@ -13,6 +13,16 @@ const Index = () => {
   const [copied, setCopied] = useState(false);
   const [submitting, setSubmitting] = useState(false);
 
+  // Auto-redirect if already paired
+  useEffect(() => {
+    if (loading || !currentUserId) return;
+    if (role === 'senior' && linkedCaregiver) {
+      navigate('/senior', { replace: true });
+    } else if (role === 'caregiver' && linkedSenior) {
+      navigate('/caregiver', { replace: true });
+    }
+  }, [role, linkedCaregiver, linkedSenior, loading, currentUserId, navigate]);
+
   // Auto-generate pairing code for caregiver if they don't have one
   useEffect(() => {
     if (role === 'caregiver' && !pairingCode && currentUserId) {
@@ -121,44 +131,12 @@ const Index = () => {
     );
   }
 
-  // Step 2a: Caregiver — show connected loved one or pairing code
+  // Step 2a: Caregiver — show pairing code (if already paired, useEffect redirects)
   if (role === 'caregiver') {
-    // If already paired, go straight to dashboard
     if (linkedSenior) {
       return (
-        <div className="min-h-screen bg-background flex flex-col items-center justify-center px-6 max-w-md mx-auto">
-          <div className="absolute top-5 right-5">
-            <LanguageToggle />
-          </div>
-
-          <div className="w-16 h-16 rounded-full gradient-primary flex items-center justify-center shadow-glow-primary mb-4 animate-slide-up">
-            <Users className="w-8 h-8 text-primary-foreground" />
-          </div>
-
-          <div className="w-full mb-6 animate-slide-up-delay-1">
-            <div className="bg-success/10 rounded-2xl p-4 border border-success/20 text-center">
-              <CheckCircle2 className="w-6 h-6 text-success mx-auto mb-2" />
-              <p className="font-bold text-foreground text-sm">
-                {t(`Connected to ${linkedSenior.seniorName}`, `${linkedSenior.seniorName} से जुड़े हैं`)}
-              </p>
-              <button
-                type="button"
-                onClick={() => navigate('/caregiver')}
-                className="mt-3 w-full elder-tile gradient-primary text-primary-foreground text-elder-lg py-4"
-              >
-                {t('Go to Dashboard', 'डैशबोर्ड पर जाएं')}
-                <ArrowRight className="w-5 h-5 ml-2" />
-              </button>
-            </div>
-          </div>
-
-          <button
-            type="button"
-            onClick={() => setRole(null)}
-            className="w-full text-center text-sm text-muted-foreground font-semibold py-2"
-          >
-            {t('← Go Back', '← वापस जाएं')}
-          </button>
+        <div className="min-h-screen bg-background flex items-center justify-center">
+          <Loader2 className="w-8 h-8 text-primary animate-spin" />
         </div>
       );
     }
@@ -177,7 +155,7 @@ const Index = () => {
           </div>
           <div>
             <h1 className="text-elder-xl font-black text-foreground">
-              {t('AURA Care', 'आरा केयर')}
+              {t('Kin Care', 'किन केयर')}
             </h1>
             <p className="text-sm text-muted-foreground font-semibold">
               {t('Caregiver Home', 'देखभालकर्ता होम')}
@@ -251,44 +229,12 @@ const Index = () => {
     );
   }
 
-  // Step 2b: Senior — show dashboard shortcut if already connected, or code entry
+  // Step 2b: Senior — code entry (if already paired, useEffect redirects)
   if (role === 'senior') {
-    // Already paired — go to dashboard
     if (linkedCaregiver) {
       return (
-        <div className="min-h-screen bg-background flex flex-col items-center justify-center px-6 max-w-md mx-auto">
-          <div className="absolute top-5 right-5">
-            <LanguageToggle />
-          </div>
-
-          <div className="w-16 h-16 rounded-full gradient-primary flex items-center justify-center shadow-glow-primary mb-4 animate-slide-up">
-            <Heart className="w-8 h-8 text-primary-foreground" />
-          </div>
-
-          <div className="w-full mb-6 animate-slide-up-delay-1">
-            <div className="bg-success/10 rounded-2xl p-4 border border-success/20 text-center">
-              <CheckCircle2 className="w-6 h-6 text-success mx-auto mb-2" />
-              <p className="font-bold text-foreground text-sm">
-                {t(`Connected to ${linkedCaregiver.caregiverName}`, `${linkedCaregiver.caregiverName} से जुड़े हैं`)}
-              </p>
-              <button
-                type="button"
-                onClick={() => navigate('/senior')}
-                className="mt-3 w-full elder-tile gradient-primary text-primary-foreground text-elder-lg py-4"
-              >
-                {t('Go to My Dashboard', 'मेरे डैशबोर्ड पर जाएं')}
-                <ArrowRight className="w-5 h-5 ml-2" />
-              </button>
-            </div>
-          </div>
-
-          <button
-            type="button"
-            onClick={() => setRole(null)}
-            className="w-full text-center text-sm text-muted-foreground font-semibold py-2"
-          >
-            {t('← Go Back', '← वापस जाएं')}
-          </button>
+        <div className="min-h-screen bg-background flex items-center justify-center">
+          <Loader2 className="w-8 h-8 text-primary animate-spin" />
         </div>
       );
     }

@@ -17,6 +17,7 @@ import Alerts from "./pages/caregiver/Alerts";
 import RemoteControls from "./pages/caregiver/RemoteControls";
 import Analytics from "./pages/caregiver/Analytics";
 import PrescriptionScan from "./pages/caregiver/PrescriptionScan";
+import MedicineHistory from "./pages/shared/MedicineHistory";
 import { Shield } from "lucide-react";
 
 const queryClient = new QueryClient();
@@ -29,7 +30,7 @@ const AuthScreen = () => (
       </div>
     </div>
     <h1 className="text-elder-2xl font-black text-foreground text-center mt-5">
-      AURA Care
+      Kin Care
     </h1>
     <p className="text-muted-foreground text-center font-semibold mt-2">
       Intelligent Support for Independent Living
@@ -78,6 +79,7 @@ const App = () => (
               <Route path="/caregiver/alerts" element={<Alerts />} />
               <Route path="/caregiver/controls" element={<RemoteControls />} />
               <Route path="/caregiver/analytics" element={<Analytics />} />
+              <Route path="/history" element={<MedicineHistory />} />
               <Route path="*" element={<NotFound />} />
             </Routes>
           </BrowserRouter>

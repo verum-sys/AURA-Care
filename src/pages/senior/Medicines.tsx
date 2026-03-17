@@ -1,9 +1,11 @@
-import { Check, Clock, Pill, Utensils } from 'lucide-react';
+import { useNavigate } from 'react-router-dom';
+import { Check, Clock, Pill, Utensils, History } from 'lucide-react';
 import SeniorLayout from '@/components/SeniorLayout';
 import { useApp } from '@/context/AppContext';
 import { toast } from '@/hooks/use-toast';
 
 const Medicines = () => {
+  const navigate = useNavigate();
   const { t, sharedMedicines, markMedicineTaken } = useApp();
 
   const pendingMeds = sharedMedicines.filter(m => !m.taken);
@@ -160,6 +162,15 @@ const Medicines = () => {
             </p>
           </div>
         )}
+
+        {/* View History */}
+        <button
+          onClick={() => navigate('/history')}
+          className="w-full flex items-center justify-center gap-2 py-3 rounded-elder border border-border bg-card text-foreground font-bold text-sm hover:bg-muted transition-all"
+        >
+          <History className="w-4 h-4 text-primary" />
+          {t('View Medicine History', 'दवाई इतिहास देखें')}
+        </button>
       </div>
     </SeniorLayout>
   );
