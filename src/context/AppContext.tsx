@@ -401,6 +401,56 @@ export const AppProvider = ({ children }: { children: ReactNode }) => {
     }
   }, [scopedSeniorId]);
 
+  // ─── No-medicine-taken-all-day alert ─────────────────────
+  const noMedAlertFired = useRef(false);
+
+  useEffect(() => {
+    if (!scopedSeniorId || sharedMedicines.length === 0) return;
+
+    const checkNoMedicineTaken = () => {
+      const now = new Date();
+      const hour = now.getHours();
+
+      // Only check after 6 PM (18:00) to give the senior a full day
+      if (hour < 18) return;
+
+      // Don't fire more than once per day
+      if (noMedAlertFired.current) return;
+
+      const anyTaken = sharedMedicines.some(m => m.taken);
+      if (!anyTaken) {
+        noMedAlertFired.current = true;
+        const timeStr = now.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+        addAlert({
+          type: 'medication',
+          message: `No medicines have been taken today. Please check on your loved one.`,
+          messageHi: `आज कोई भी दवाई नहीं ली गई है। कृपया अपनों की जाँच करें।`,
+          time: timeStr,
+          severity: 'critical',
+        });
+      }
+    };
+
+    // Check immediately and then every 30 minutes
+    checkNoMedicineTaken();
+    const interval = setInterval(checkNoMedicineTaken, 30 * 60 * 1000);
+
+    return () => clearInterval(interval);
+  }, [scopedSeniorId, sharedMedicines, addAlert]);
+
+  // Reset the no-medicine alert flag at midnight
+  useEffect(() => {
+    const now = new Date();
+    const msUntilMidnight =
+      new Date(now.getFullYear(), now.getMonth(), now.getDate() + 1).getTime() - now.getTime();
+
+    const timeout = setTimeout(() => {
+      noMedAlertFired.current = false;
+    }, msUntilMidnight);
+
+    return () => clearTimeout(timeout);
+  }, []);
+
   // ─── Refresh all data ─────────────────────────────────
   const refreshData = useCallback(async () => {
     if (!userId) return;

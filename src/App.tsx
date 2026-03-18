@@ -3,7 +3,7 @@ import { Toaster as Sonner } from "@/components/ui/sonner";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { BrowserRouter, Routes, Route } from "react-router-dom";
-import { Show, SignInButton, SignUpButton, UserButton } from "@clerk/react";
+import { Show, SignInButton, UserButton } from "@clerk/react";
 import { AppProvider } from "@/context/AppContext";
 import Index from "./pages/Index";
 import NotFound from "./pages/NotFound";
@@ -18,40 +18,54 @@ import RemoteControls from "./pages/caregiver/RemoteControls";
 import Analytics from "./pages/caregiver/Analytics";
 import PrescriptionScan from "./pages/caregiver/PrescriptionScan";
 import MedicineHistory from "./pages/shared/MedicineHistory";
-import { Shield } from "lucide-react";
+import { Shield, Heart, Users } from "lucide-react";
 
 const queryClient = new QueryClient();
 
-const AuthScreen = () => (
-  <div className="min-h-screen bg-background flex flex-col items-center justify-center px-6 max-w-md mx-auto">
-    <div className="mb-2">
-      <div className="w-20 h-20 rounded-2xl gradient-hero flex items-center justify-center shadow-glow-primary mx-auto">
-        <Shield className="w-10 h-10 text-primary-foreground" />
+const AuthScreen = () => {
+  const handleLogin = (role: 'senior' | 'caregiver') => {
+    localStorage.setItem('pending_role', role);
+  };
+
+  return (
+    <div className="min-h-screen bg-background flex flex-col items-center justify-center px-6 max-w-md mx-auto">
+      <div className="mb-2">
+        <div className="w-20 h-20 rounded-2xl gradient-hero flex items-center justify-center shadow-glow-primary mx-auto">
+          <Shield className="w-10 h-10 text-primary-foreground" />
+        </div>
       </div>
+      <h1 className="text-elder-2xl font-black text-foreground text-center mt-5">
+        Kin Care
+      </h1>
+      <p className="text-muted-foreground text-center font-semibold mt-2">
+        Intelligent Support for Independent Living
+      </p>
+      <div className="w-full mt-10 space-y-4 flex flex-col items-center">
+        <SignInButton mode="modal">
+          <button
+            onClick={() => handleLogin('senior')}
+            className="w-full elder-tile gradient-primary text-primary-foreground flex-col gap-2 text-elder-xl"
+          >
+            <Heart className="w-10 h-10" />
+            Login as Dependant
+          </button>
+        </SignInButton>
+        <SignInButton mode="modal">
+          <button
+            onClick={() => handleLogin('caregiver')}
+            className="w-full elder-tile bg-card text-foreground flex-col gap-2 text-elder-xl border-2 border-primary/20"
+          >
+            <Users className="w-10 h-10 text-primary" />
+            Login as Caregiver
+          </button>
+        </SignInButton>
+      </div>
+      <p className="text-xs text-muted-foreground mt-8 text-center">
+        Made with ❤️ for India's elderly
+      </p>
     </div>
-    <h1 className="text-elder-2xl font-black text-foreground text-center mt-5">
-      Kin Care
-    </h1>
-    <p className="text-muted-foreground text-center font-semibold mt-2">
-      Intelligent Support for Independent Living
-    </p>
-    <div className="w-full mt-10 space-y-4 flex flex-col items-center">
-      <SignInButton mode="modal">
-        <button className="w-full elder-tile gradient-primary text-primary-foreground flex-col gap-2 text-elder-xl">
-          Sign In
-        </button>
-      </SignInButton>
-      <SignUpButton mode="modal">
-        <button className="w-full elder-tile bg-card text-foreground flex-col gap-2 text-elder-xl border-2 border-primary/20">
-          Sign Up
-        </button>
-      </SignUpButton>
-    </div>
-    <p className="text-xs text-muted-foreground mt-8 text-center">
-      Made with ❤️ for India's elderly
-    </p>
-  </div>
-);
+  );
+};
 
 const App = () => (
   <QueryClientProvider client={queryClient}>

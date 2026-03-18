@@ -30,15 +30,6 @@ const Index = () => {
     }
   }, [role, pairingCode, currentUserId, generatePairingCode]);
 
-  // Wait for Clerk + Supabase to load
-  if (!currentUserId || loading) {
-    return (
-      <div className="min-h-screen bg-background flex items-center justify-center">
-        <Loader2 className="w-8 h-8 text-primary animate-spin" />
-      </div>
-    );
-  }
-
   const handleSelectCaregiver = async () => {
     await setRole('caregiver');
     generatePairingCode();
@@ -47,6 +38,29 @@ const Index = () => {
   const handleSelectSenior = () => {
     setRole('senior');
   };
+
+  // Auto-select role from login screen choice
+  useEffect(() => {
+    if (!currentUserId || loading || role) return;
+    const pendingRole = localStorage.getItem('pending_role');
+    if (pendingRole === 'senior' || pendingRole === 'caregiver') {
+      localStorage.removeItem('pending_role');
+      if (pendingRole === 'caregiver') {
+        handleSelectCaregiver();
+      } else {
+        handleSelectSenior();
+      }
+    }
+  }, [currentUserId, loading, role]);
+
+  // Wait for Clerk + Supabase to load
+  if (!currentUserId || loading) {
+    return (
+      <div className="min-h-screen bg-background flex items-center justify-center">
+        <Loader2 className="w-8 h-8 text-primary animate-spin" />
+      </div>
+    );
+  }
 
   const handleCopyCode = () => {
     if (pairingCode) {
