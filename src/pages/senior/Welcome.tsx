@@ -1,17 +1,41 @@
 import { useState } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { Sun, Moon, CloudSun, Shield, Users, User, ArrowRight, Loader2, Pill, UtensilsCrossed, SmilePlus, Heart } from 'lucide-react';
+import { Sun, Moon, CloudSun, Shield, Users, User, ArrowRight, Loader2, Pill, UtensilsCrossed, SmilePlus, Heart, Phone } from 'lucide-react';
 import SeniorLayout from '@/components/SeniorLayout';
 import { useApp } from '@/context/AppContext';
 import { toast } from '@/hooks/use-toast';
 
 const Welcome = () => {
   const navigate = useNavigate();
-  const { t, linkedCaregiver, linkWithCode, sharedMedicines, wellbeing, currentUserName } = useApp();
+  const { t, linkedCaregiver, linkWithCode, addAlert, sharedMedicines, wellbeing, currentUserName } = useApp();
   const [showCodeInput, setShowCodeInput] = useState(false);
   const [codeInput, setCodeInput] = useState('');
   const [codeError, setCodeError] = useState('');
   const [submitting, setSubmitting] = useState(false);
+  const [sosPressed, setSosPressed] = useState(false);
+
+  const handleSOS = async () => {
+    if (sosPressed) return; // prevent double-tap
+    setSosPressed(true);
+
+    await addAlert({
+      type: 'distress',
+      message: `EMERGENCY SOS: Senior pressed the emergency button. Immediate attention needed!`,
+      messageHi: `आपातकालीन SOS: बुज़ुर्ग ने आपातकालीन बटन दबाया। तुरंत ध्यान दें!`,
+      time: new Date().toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' }),
+      severity: 'critical',
+    });
+
+    toast({
+      title: t('SOS Sent!', 'SOS भेजा गया!'),
+      description: t(
+        'Your caregiver has been alerted. Help is on the way.',
+        'आपके देखभालकर्ता को सूचित कर दिया गया है। मदद आ रही है।'
+      ),
+    });
+
+    setTimeout(() => setSosPressed(false), 30000); // cooldown 30 sec
+  };
 
   const handleSubmitCode = async () => {
     setCodeError('');
@@ -94,6 +118,29 @@ const Welcome = () => {
             </div>
           )}
         </div>
+      </div>
+
+      {/* Emergency SOS Button */}
+      <div className="mt-6 animate-slide-up">
+        <button
+          type="button"
+          onClick={handleSOS}
+          disabled={sosPressed}
+          className={`w-full py-5 rounded-2xl flex items-center justify-center gap-3 text-white font-black text-elder-xl shadow-glow-emergency transition-all active:scale-[0.97] ${
+            sosPressed
+              ? 'bg-gray-400 cursor-not-allowed'
+              : 'gradient-emergency animate-pulse'
+          }`}
+        >
+          <Phone className="w-7 h-7" />
+          {sosPressed
+            ? t('SOS Sent — Help is coming', 'SOS भेजा गया — मदद आ रही है')
+            : t('Emergency SOS', 'आपातकालीन SOS')
+          }
+        </button>
+        <p className="text-xs text-muted-foreground text-center mt-1.5 font-semibold">
+          {t('Tap to instantly alert your caregiver', 'अपने देखभालकर्ता को तुरंत सूचित करने के लिए टैप करें')}
+        </p>
       </div>
 
       {/* Action tiles */}

@@ -1,27 +1,56 @@
 import { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { Shield, Heart, Users, Copy, CheckCircle2, ArrowRight, Loader2, RefreshCw, User } from 'lucide-react';
+import { useClerk } from '@clerk/react';
 import { useApp } from '@/context/AppContext';
 import LanguageToggle from '@/components/LanguageToggle';
 import { toast } from '@/hooks/use-toast';
+import * as db from '@/lib/database';
 
 const Index = () => {
   const navigate = useNavigate();
+  const { signOut } = useClerk();
   const { t, role, setRole, pairingCode, generatePairingCode, linkWithCode, linkedCaregiver, linkedSenior, currentUserId, loading } = useApp();
   const [codeInput, setCodeInput] = useState('');
   const [codeError, setCodeError] = useState('');
   const [copied, setCopied] = useState(false);
   const [submitting, setSubmitting] = useState(false);
 
-  // Auto-redirect if already paired
+  // Check if user already has an opposite role in the DB and block them
+  const validateRoleConflict = async (requestedRole: 'senior' | 'caregiver'): Promise<boolean> => {
+    if (!currentUserId) return true;
+    try {
+      const dbUser = await db.getUser(currentUserId);
+      if (dbUser?.role && dbUser.role !== requestedRole) {
+        const existingLabel = dbUser.role === 'senior' ? t('Dependant', 'आश्रित') : t('Caregiver', 'देखभालकर्ता');
+        const requestedLabel = requestedRole === 'senior' ? t('Dependant', 'आश्रित') : t('Caregiver', 'देखभालकर्ता');
+        toast({
+          title: t('Account already registered', 'खाता पहले से पंजीकृत'),
+          description: t(
+            `This email is already registered as a ${existingLabel}. You cannot use the same email as a ${requestedLabel}. Please sign in with a different email.`,
+            `यह ईमेल पहले से ${existingLabel} के रूप में पंजीकृत है। आप एक ही ईमेल को ${requestedLabel} के रूप में उपयोग नहीं कर सकते। कृपया किसी अन्य ईमेल से साइन इन करें।`
+          ),
+          variant: 'destructive',
+        });
+        // Sign the user out so they can use a different account
+        await signOut();
+        return false;
+      }
+    } catch (err) {
+      console.error('Role conflict check error:', err);
+    }
+    return true;
+  };
+
+  // Auto-redirect based on role (skip role selection on repeat visits)
   useEffect(() => {
     if (loading || !currentUserId) return;
-    if (role === 'senior' && linkedCaregiver) {
+    if (role === 'senior') {
       navigate('/senior', { replace: true });
-    } else if (role === 'caregiver' && linkedSenior) {
+    } else if (role === 'caregiver') {
       navigate('/caregiver', { replace: true });
     }
-  }, [role, linkedCaregiver, linkedSenior, loading, currentUserId, navigate]);
+  }, [role, loading, currentUserId, navigate]);
 
   // Auto-generate pairing code for caregiver if they don't have one
   useEffect(() => {
@@ -31,11 +60,15 @@ const Index = () => {
   }, [role, pairingCode, currentUserId, generatePairingCode]);
 
   const handleSelectCaregiver = async () => {
+    const allowed = await validateRoleConflict('caregiver');
+    if (!allowed) return;
     await setRole('caregiver');
     generatePairingCode();
   };
 
-  const handleSelectSenior = () => {
+  const handleSelectSenior = async () => {
+    const allowed = await validateRoleConflict('senior');
+    if (!allowed) return;
     setRole('senior');
   };
 

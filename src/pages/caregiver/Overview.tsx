@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { Pill, UtensilsCrossed, SmilePlus, Clock, Wifi, Battery, AlertTriangle, Bell, Copy, CheckCircle2, RefreshCw, Link, User, Scan, Activity, ArrowRight, History } from 'lucide-react';
 import CaregiverLayout from '@/components/CaregiverLayout';
@@ -25,8 +25,15 @@ const ProgressRing = ({ percent, size = 72, stroke = 6 }: { percent: number; siz
 
 const Overview = () => {
   const navigate = useNavigate();
-  const { t, wellbeing, sharedMedicines, dynamicAlerts, pairingCode, generatePairingCode, activeSeniorName, linkedSenior } = useApp();
+  const { t, wellbeing, sharedMedicines, dynamicAlerts, pairingCode, generatePairingCode, activeSeniorName, linkedSenior, currentUserId, currentUserName } = useApp();
   const [copied, setCopied] = useState(false);
+
+  // Auto-generate pairing code if caregiver doesn't have one yet
+  useEffect(() => {
+    if (currentUserId && !pairingCode) {
+      generatePairingCode();
+    }
+  }, [currentUserId, pairingCode, generatePairingCode]);
 
   const showDashboard = !!linkedSenior;
 
@@ -91,6 +98,32 @@ const Overview = () => {
         </div>
       )}
 
+      {/* ═══ Pairing code (always visible for caregiver) ═══ */}
+      {linkedSenior && pairingCode && (
+        <div className="glass-card rounded-2xl p-4 flex items-center justify-between animate-slide-up mb-4">
+          <div className="flex items-center gap-3">
+            <div className="w-9 h-9 rounded-xl bg-primary/10 flex items-center justify-center flex-shrink-0">
+              <Link className="w-4.5 h-4.5 text-primary" />
+            </div>
+            <div>
+              <p className="text-xs text-muted-foreground font-semibold">{t('Your Pairing Code', 'आपका पेयरिंग कोड')}</p>
+              <p className="text-lg font-black text-primary tracking-[0.15em] font-mono">{pairingCode}</p>
+            </div>
+          </div>
+          <button
+            type="button"
+            onClick={handleCopyCode}
+            className="flex items-center gap-1.5 px-3 py-2 rounded-xl bg-primary/10 hover:bg-primary/20 transition-colors"
+          >
+            {copied ? (
+              <><CheckCircle2 className="w-4 h-4 text-success" /><span className="text-xs font-bold text-success">{t('Copied', 'कॉपी')}</span></>
+            ) : (
+              <><Copy className="w-4 h-4 text-primary" /><span className="text-xs font-bold text-primary">{t('Copy', 'कॉपी')}</span></>
+            )}
+          </button>
+        </div>
+      )}
+
       {/* ═══ Connected dashboard ═══ */}
       {showDashboard && (
         <div className="space-y-4">
@@ -109,7 +142,7 @@ const Overview = () => {
               </div>
 
               <div className="flex-1 min-w-0">
-                <p className="text-xs font-semibold opacity-70">{t('Care Dashboard', 'देखभाल डैशबोर्ड')}</p>
+                <p className="text-xs font-semibold opacity-70">{t('Care Dashboard', 'देखभाल डैशबोर्ड')} · {currentUserName}</p>
                 <h2 className="text-xl font-black truncate">{activeSeniorName}</h2>
                 <div className="flex items-center gap-1.5 mt-1 opacity-75">
                   <Activity className="w-3.5 h-3.5" />

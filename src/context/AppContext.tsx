@@ -149,6 +149,29 @@ export const AppProvider = ({ children }: { children: ReactNode }) => {
 
   const initDone = useRef(false);
 
+  // ─── Offline cache helpers ─────────────────────────────
+  const CACHE_KEY_MEDS = 'kincare_offline_medicines';
+  const CACHE_KEY_WELL = 'kincare_offline_wellbeing';
+
+  const cacheMedicines = (meds: SharedMedicine[]) => {
+    try { localStorage.setItem(CACHE_KEY_MEDS, JSON.stringify(meds)); } catch {}
+  };
+  const cacheWellbeing = (w: WellbeingEntry | null) => {
+    try { localStorage.setItem(CACHE_KEY_WELL, JSON.stringify(w)); } catch {}
+  };
+  const getCachedMedicines = (): SharedMedicine[] => {
+    try {
+      const raw = localStorage.getItem(CACHE_KEY_MEDS);
+      return raw ? JSON.parse(raw) : [];
+    } catch { return []; }
+  };
+  const getCachedWellbeing = (): WellbeingEntry | null => {
+    try {
+      const raw = localStorage.getItem(CACHE_KEY_WELL);
+      return raw ? JSON.parse(raw) : null;
+    } catch { return null; }
+  };
+
   // ─── Initialize: load user profile from Supabase ──────
   useEffect(() => {
     if (!userId) {
@@ -250,15 +273,29 @@ export const AppProvider = ({ children }: { children: ReactNode }) => {
         if (cancelled) return;
 
         const todayLogSet = new Set(todayLogs.map(l => l.medicine_id));
-        setSharedMedicinesState(meds.map(m => toMedicine(m, todayLogSet)));
-        setWellbeingState(well ? {
-          mood: well.mood,
+        const parsedMeds = meds.map(m => toMedicine(m, todayLogSet));
+        const parsedWell = well ? {
+          mood: well.mood as MoodValue,
           painArea: well.pain_area,
           timestamp: well.created_at,
-        } : null);
+        } : null;
+
+        setSharedMedicinesState(parsedMeds);
+        setWellbeingState(parsedWell);
         setDynamicAlertsState(alerts.map(toAlert));
+
+        // Save to offline cache for when network is unavailable
+        cacheMedicines(parsedMeds);
+        cacheWellbeing(parsedWell);
       } catch (err) {
-        console.error('Error loading scoped data:', err);
+        console.error('Error loading scoped data, falling back to offline cache:', err);
+        // Load from offline cache if network fails
+        if (!cancelled) {
+          const cachedMeds = getCachedMedicines();
+          const cachedWell = getCachedWellbeing();
+          if (cachedMeds.length > 0) setSharedMedicinesState(cachedMeds);
+          if (cachedWell) setWellbeingState(cachedWell);
+        }
       }
     };
 
@@ -450,6 +487,99 @@ export const AppProvider = ({ children }: { children: ReactNode }) => {
 
     return () => clearTimeout(timeout);
   }, []);
+
+  // ─── Inactivity detection: alert caregiver if senior hasn't used app for 6+ hours ───
+  useEffect(() => {
+    if (role !== 'senior' || !scopedSeniorId) return;
+
+    const INACTIVITY_HOURS = 6;
+    const ACTIVITY_KEY = 'kincare_last_activity';
+    const INACTIVITY_ALERT_KEY = 'kincare_inactivity_alert_date';
+
+    // Record activity on any interaction
+    const recordActivity = () => {
+      localStorage.setItem(ACTIVITY_KEY, Date.now().toString());
+    };
+
+    // Record now on mount
+    recordActivity();
+
+    // Listen for user interactions
+    const events = ['click', 'touchstart', 'scroll', 'keydown'];
+    events.forEach(e => window.addEventListener(e, recordActivity, { passive: true }));
+
+    // Check every 30 minutes
+    const interval = setInterval(() => {
+      const lastStr = localStorage.getItem(ACTIVITY_KEY);
+      if (!lastStr) return;
+
+      const lastActivity = parseInt(lastStr, 10);
+      const hoursSince = (Date.now() - lastActivity) / (1000 * 60 * 60);
+      const today = new Date().toDateString();
+
+      // Only fire once per day
+      if (hoursSince >= INACTIVITY_HOURS && localStorage.getItem(INACTIVITY_ALERT_KEY) !== today) {
+        localStorage.setItem(INACTIVITY_ALERT_KEY, today);
+        const hours = Math.floor(hoursSince);
+        addAlert({
+          type: 'inactivity',
+          message: `No activity detected from senior for ${hours} hours. Please check on them.`,
+          messageHi: `बुज़ुर्ग से ${hours} घंटे से कोई गतिविधि नहीं। कृपया उनकी जाँच करें।`,
+          time: new Date().toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' }),
+          severity: 'critical',
+        });
+      }
+    }, 30 * 60 * 1000);
+
+    return () => {
+      events.forEach(e => window.removeEventListener(e, recordActivity));
+      clearInterval(interval);
+    };
+  }, [role, scopedSeniorId, addAlert]);
+
+  // ─── Daily summary for caregiver at 9 PM ──────────────────
+  useEffect(() => {
+    if (role !== 'caregiver' || !scopedSeniorId || sharedMedicines.length === 0) return;
+
+    const SUMMARY_KEY = 'kincare_daily_summary_date';
+
+    const sendDailySummary = () => {
+      const now = new Date();
+      const hour = now.getHours();
+      if (hour < 21) return; // Only after 9 PM
+
+      const today = now.toDateString();
+      if (localStorage.getItem(SUMMARY_KEY) === today) return; // Already sent today
+
+      localStorage.setItem(SUMMARY_KEY, today);
+
+      const takenCount = sharedMedicines.filter(m => m.taken).length;
+      const totalMeds = sharedMedicines.length;
+      const missedCount = totalMeds - takenCount;
+      const moodText = wellbeing?.mood
+        ? (wellbeing.mood === 'good' ? 'Good' : wellbeing.mood === 'okay' ? 'Okay' : 'Not Well')
+        : 'Not checked';
+      const moodTextHi = wellbeing?.mood
+        ? (wellbeing.mood === 'good' ? 'अच्छा' : wellbeing.mood === 'okay' ? 'ठीक' : 'अच्छा नहीं')
+        : 'दर्ज नहीं';
+
+      const missedNames = sharedMedicines.filter(m => !m.taken).map(m => m.name).join(', ');
+      const missedNamesHi = sharedMedicines.filter(m => !m.taken).map(m => m.nameHi || m.name).join(', ');
+
+      addAlert({
+        type: 'medication',
+        message: `Daily Summary: ${takenCount}/${totalMeds} medicines taken. ${missedCount > 0 ? `Missed: ${missedNames}.` : 'All taken!'} Mood: ${moodText}.`,
+        messageHi: `दैनिक सारांश: ${takenCount}/${totalMeds} दवाइयाँ ली गईं। ${missedCount > 0 ? `छूटी: ${missedNamesHi}।` : 'सब ली गईं!'} मूड: ${moodTextHi}।`,
+        time: now.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' }),
+        severity: missedCount > 0 ? 'warning' : 'info',
+      });
+    };
+
+    // Check immediately and every 15 min
+    sendDailySummary();
+    const interval = setInterval(sendDailySummary, 15 * 60 * 1000);
+    return () => clearInterval(interval);
+  }, [role, scopedSeniorId, sharedMedicines, wellbeing, addAlert]);
 
   // ─── Refresh all data ─────────────────────────────────
   const refreshData = useCallback(async () => {
