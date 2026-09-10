@@ -32,6 +32,7 @@ dist-ssr
 *.json
 !components.json
 !.mcp.json
+!vercel.json
 !postcss.config.js
 !tailwind.config.ts
 !eslint.config.js
@@ -41,3 +42,4 @@ android/keystore.properties
 *.keystore
 *.jks
 google-services.json
+.vercel
