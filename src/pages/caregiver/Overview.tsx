@@ -356,6 +356,18 @@ const Overview = () => {
             <ArrowRight className="w-4 h-4 text-muted-foreground" />
           </button>
 
+          <button
+            type="button"
+            onClick={() => navigate('/privacy')}
+            className="w-full flex items-center gap-3 p-4 rounded-2xl border border-border bg-card transition-all active:scale-[0.98] animate-slide-up-delay-3"
+          >
+            <Lock className="w-5 h-5 flex-shrink-0 text-muted-foreground" />
+            <div className="flex-1 text-left">
+              <span className="text-sm font-bold text-foreground">{t('Privacy Policy', 'गोपनीयता नीति')}</span>
+            </div>
+            <ArrowRight className="w-4 h-4 text-muted-foreground" />
+          </button>
+
           {/* Danger zone */}
           <button
             type="button"

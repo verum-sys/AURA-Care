@@ -9,6 +9,7 @@ import { Capacitor } from "@capacitor/core";
 import { App as CapacitorApp } from "@capacitor/app";
 import { AppProvider } from "@/context/AppContext";
 import SsoCallback from "./pages/SsoCallback";
+import Privacy from "./pages/Privacy";
 import DeleteAccount from "./pages/DeleteAccount";
 import Index from "./pages/Index";
 import NotFound from "./pages/NotFound";
@@ -184,6 +185,12 @@ const AppRoutes = () => {
   // it handles both signed-in and signed-out states internally.
   if (location.pathname === '/delete-account') {
     return <DeleteAccount />;
+  }
+
+  // A privacy policy must be readable without an account — Play Console
+  // reviewers and prospective users both need this reachable signed-out.
+  if (location.pathname === '/privacy') {
+    return <Privacy />;
   }
 
   return (
