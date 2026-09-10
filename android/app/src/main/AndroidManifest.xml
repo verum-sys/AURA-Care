@@ -32,6 +32,17 @@
                 <data android:scheme="https" android:host="localhost" />
             </intent-filter>
 
+            <!-- Deep link: native Google OAuth (opened in an external browser,
+                 since Google blocks its consent screen inside a WebView) redirects
+                 here to hand the callback back to the app — see
+                 NATIVE_OAUTH_REDIRECT_URL / NativeOAuthBridge in src/App.tsx. -->
+            <intent-filter>
+                <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <category android:name="android.intent.category.BROWSABLE" />
+                <data android:scheme="com.kincare.app" android:host="sso-callback" />
+            </intent-filter>
+
         </activity>
 
         <provider
@@ -54,4 +65,7 @@
     <uses-permission android:name="android.permission.READ_EXTERNAL_STORAGE" android:maxSdkVersion="32" />
     <uses-permission android:name="android.permission.WRITE_EXTERNAL_STORAGE" android:maxSdkVersion="32" />
     <uses-permission android:name="android.permission.VIBRATE" />
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+    <uses-permission android:name="android.permission.SCHEDULE_EXACT_ALARM" />
+    <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
 </manifest>

@@ -5,6 +5,7 @@ import { StatusBar, Style } from "@capacitor/status-bar";
 import { SplashScreen } from "@capacitor/splash-screen";
 import { Keyboard } from "@capacitor/keyboard";
 import App from "./App.tsx";
+import { initNotifications } from "./lib/notifications";
 import "./index.css";
 
 const PUBLISHABLE_KEY = import.meta.env.VITE_CLERK_PUBLISHABLE_KEY;
@@ -20,6 +21,8 @@ if (Capacitor.isNativePlatform()) {
   SplashScreen.hide().catch(() => {});
   Keyboard.setResizeMode({ mode: 'body' as any }).catch(() => {});
 }
+
+initNotifications();
 
 createRoot(document.getElementById("root")!).render(
   <ClerkProvider publishableKey={PUBLISHABLE_KEY}>

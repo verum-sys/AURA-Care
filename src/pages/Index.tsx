@@ -10,13 +10,65 @@ import * as db from '@/lib/database';
 const Index = () => {
   const navigate = useNavigate();
   const { signOut } = useClerk();
-  const { t, role, setRole, pairingCode, generatePairingCode, linkWithCode, linkedCaregiver, linkedSenior, currentUserId, loading } = useApp();
+  const { t, role, setRole, pairingCode, generatePairingCode, linkWithCode, linkedCaregiver, linkedSenior, currentUserId, loading, refreshData, linkAsSecondaryCaregiver, goBackToRoleSelection, needsOnboarding } = useApp();
   const [codeInput, setCodeInput] = useState('');
   const [codeError, setCodeError] = useState('');
   const [copied, setCopied] = useState(false);
   const [submitting, setSubmitting] = useState(false);
 
-  // Check if user already has an opposite role in the DB and block them
+  // Caregiver-only: switch between "generate a pairing code for a new senior"
+  // and "I was invited by another caregiver" (join an existing senior as secondary).
+  const [inviteMode, setInviteMode] = useState(false);
+  const [inviteCodeInput, setInviteCodeInput] = useState('');
+  const [inviteCodeError, setInviteCodeError] = useState('');
+  const [inviteSubmitting, setInviteSubmitting] = useState(false);
+
+  // A caregiver-invite WhatsApp link (?invite=CODE) — see the "Invite Other
+  // Caregivers" step of the onboarding wizard. Someone opening this link is
+  // always joining as a (secondary) caregiver, so it short-circuits the role
+  // picker exactly like a role chosen on the login screen does below.
+  const [inviteFromUrl] = useState(() => new URLSearchParams(window.location.search).get('invite'));
+
+  // Captured once on mount: was a role already chosen on the login screen?
+  // If so, we must never flash the "Who are you?" picker while waiting for
+  // that role to finish applying (setRole is async).
+  const [hasPendingRole] = useState(() => {
+    const pending = localStorage.getItem('pending_role');
+    return pending === 'senior' || pending === 'caregiver' || !!inviteFromUrl;
+  });
+
+  // Auto-redirect if already paired
+  useEffect(() => {
+    if (loading || !currentUserId) return;
+    if (role === 'senior' && linkedCaregiver) {
+      navigate('/senior/checkin', { replace: true });
+    } else if (role === 'caregiver' && linkedSenior) {
+      navigate(needsOnboarding ? '/caregiver/onboarding' : '/caregiver', { replace: true });
+    }
+  }, [role, linkedCaregiver, linkedSenior, needsOnboarding, loading, currentUserId, navigate]);
+
+  // While a caregiver is sitting on the "waiting for dependant" screen,
+  // nothing else tells this tab that the senior has claimed the code —
+  // poll for it so the caregiver moves on to their dashboard automatically
+  // instead of needing to manually refresh the page.
+  useEffect(() => {
+    if (role !== 'caregiver' || linkedSenior || !currentUserId) return;
+    const interval = setInterval(() => {
+      refreshData();
+    }, 3000);
+    return () => clearInterval(interval);
+  }, [role, linkedSenior, currentUserId, refreshData]);
+
+  // Auto-generate pairing code for caregiver if they don't have one
+  useEffect(() => {
+    if (role === 'caregiver' && !pairingCode && currentUserId) {
+      generatePairingCode();
+    }
+  }, [role, pairingCode, currentUserId, generatePairingCode]);
+
+  // Check if user already has an opposite role in the DB and block them —
+  // otherwise the same Clerk account could end up as both a senior and a
+  // caregiver, which the rest of the app doesn't handle.
   const validateRoleConflict = async (requestedRole: 'senior' | 'caregiver'): Promise<boolean> => {
     if (!currentUserId) return true;
     try {
@@ -42,23 +94,6 @@ const Index = () => {
     return true;
   };
 
-  // Auto-redirect based on role (skip role selection on repeat visits)
-  useEffect(() => {
-    if (loading || !currentUserId) return;
-    if (role === 'senior') {
-      navigate('/senior', { replace: true });
-    } else if (role === 'caregiver') {
-      navigate('/caregiver', { replace: true });
-    }
-  }, [role, loading, currentUserId, navigate]);
-
-  // Auto-generate pairing code for caregiver if they don't have one
-  useEffect(() => {
-    if (role === 'caregiver' && !pairingCode && currentUserId) {
-      generatePairingCode();
-    }
-  }, [role, pairingCode, currentUserId, generatePairingCode]);
-
   const handleSelectCaregiver = async () => {
     const allowed = await validateRoleConflict('caregiver');
     if (!allowed) return;
@@ -75,6 +110,10 @@ const Index = () => {
   // Auto-select role from login screen choice
   useEffect(() => {
     if (!currentUserId || loading || role) return;
+    if (inviteFromUrl) {
+      handleSelectCaregiver();
+      return;
+    }
     const pendingRole = localStorage.getItem('pending_role');
     if (pendingRole === 'senior' || pendingRole === 'caregiver') {
       localStorage.removeItem('pending_role');
@@ -84,16 +123,48 @@ const Index = () => {
         handleSelectSenior();
       }
     }
-  }, [currentUserId, loading, role]);
+  }, [currentUserId, loading, role, inviteFromUrl]);
 
-  // Wait for Clerk + Supabase to load
-  if (!currentUserId || loading) {
+  // Once a caregiver-invite link has picked the caregiver role, also jump
+  // straight to the "I was invited" tab with the code pre-filled — otherwise
+  // they'd still have to notice the toggle and retype a code already in hand.
+  useEffect(() => {
+    if (inviteFromUrl && role === 'caregiver' && !linkedSenior) {
+      setInviteMode(true);
+      setInviteCodeInput(inviteFromUrl.replace(/\D/g, '').slice(0, 6));
+    }
+  }, [inviteFromUrl, role, linkedSenior]);
+
+  // Wait for Clerk + Supabase to load — also wait here while a role chosen
+  // on the login screen is still being applied, so the "Who are you?"
+  // picker never flashes for users who already picked a role.
+  if (!currentUserId || loading || (hasPendingRole && !role)) {
     return (
       <div className="min-h-screen bg-background flex items-center justify-center">
         <Loader2 className="w-8 h-8 text-primary animate-spin" />
       </div>
     );
   }
+
+  const handleSubmitInviteCode = async () => {
+    setInviteCodeError('');
+    if (inviteCodeInput.length !== 6) {
+      setInviteCodeError(t('Please enter a 6-digit code', 'कृपया 6 अंकों का कोड दर्ज करें'));
+      return;
+    }
+    setInviteSubmitting(true);
+    try {
+      const result = await linkAsSecondaryCaregiver(inviteCodeInput);
+      if (result.success) {
+        toast({ title: t('Connected as a caregiver!', 'देखभालकर्ता के रूप में जुड़ गए!') });
+        navigate('/caregiver');
+      } else {
+        setInviteCodeError(result.error || t('Invalid or expired code.', 'अमान्य या समाप्त कोड।'));
+      }
+    } finally {
+      setInviteSubmitting(false);
+    }
+  };
 
   const handleCopyCode = () => {
     if (pairingCode) {
@@ -115,7 +186,7 @@ const Index = () => {
       const result = await linkWithCode(codeInput);
       if (result.success) {
         toast({ title: t('Connected to caregiver!', 'देखभालकर्ता से जुड़ गए!') });
-        navigate('/senior');
+        navigate('/senior/checkin');
       } else if (result.error === 'You are already connected to a caregiver') {
         setCodeError(t('You are already connected to a caregiver.', 'आप पहले से एक देखभालकर्ता से जुड़े हैं।'));
       } else if (result.error === 'This caregiver is already connected to another loved one') {
@@ -210,60 +281,118 @@ const Index = () => {
           </div>
         </div>
 
-        {/* No loved one connected */}
-        <div className="mb-6 animate-slide-up-delay-1">
-          <div className="bg-muted/50 rounded-2xl p-6 text-center border border-dashed border-muted-foreground/20">
-            <User className="w-10 h-10 text-muted-foreground mx-auto mb-2" />
-            <p className="text-sm font-semibold text-muted-foreground">
-              {t('No loved one connected yet', 'अभी कोई अपना नहीं जुड़ा')}
-            </p>
-            <p className="text-xs text-muted-foreground mt-1">
-              {t('Share the code below with your loved one to connect.', 'नीचे दिया गया कोड अपनों को दें।')}
-            </p>
-          </div>
-        </div>
-
-        {/* Pairing code */}
-        <div className="bg-card rounded-2xl p-5 border-2 border-primary/20 shadow-card space-y-4 animate-slide-up-delay-2">
-          <p className="text-sm text-muted-foreground font-semibold">
-            {t('Share this code with your loved one. They will enter it in their app to connect.', 'यह कोड अपनों को दें। वे इसे अपने ऐप में दर्ज करेंगे।')}
-          </p>
-
-          <div
-            onClick={handleCopyCode}
-            className="bg-muted/50 rounded-xl px-4 py-4 cursor-pointer hover:bg-muted transition-colors flex items-center justify-between"
-          >
-            <span className="text-3xl font-black text-primary tracking-[0.25em] font-mono">
-              {pairingCode || (
-                <Loader2 className="w-8 h-8 text-primary animate-spin" />
-              )}
-            </span>
-            {pairingCode && (
-              <div className="flex items-center gap-1 text-sm">
-                {copied ? (
-                  <span className="flex items-center gap-1 text-success font-bold">
-                    <CheckCircle2 className="w-4 h-4" />
-                    {t('Copied', 'कॉपी')}
-                  </span>
-                ) : (
-                  <span className="flex items-center gap-1 text-muted-foreground font-semibold">
-                    <Copy className="w-4 h-4" />
-                    {t('Copy', 'कॉपी')}
-                  </span>
-                )}
-              </div>
-            )}
-          </div>
-
+        {/* Mode toggle: new senior vs. invited by another caregiver */}
+        <div className="flex gap-2 mb-6 p-1 rounded-xl bg-muted/50 animate-slide-up-delay-1">
           <button
             type="button"
-            onClick={() => generatePairingCode(true)}
-            className="w-full flex items-center justify-center gap-2 px-4 py-3 rounded-xl border-2 border-primary/20 hover:border-primary/40 bg-primary/5 hover:bg-primary/10 transition-all text-primary font-bold text-sm"
+            onClick={() => setInviteMode(false)}
+            className={`flex-1 py-2.5 rounded-lg text-sm font-bold transition-all ${!inviteMode ? 'bg-card shadow-sm text-primary' : 'text-muted-foreground'}`}
           >
-            <RefreshCw className="w-4 h-4" />
-            {t('Generate New Code', 'नया कोड बनाएं')}
+            {t("I'm new", 'मैं नया हूँ')}
+          </button>
+          <button
+            type="button"
+            onClick={() => setInviteMode(true)}
+            className={`flex-1 py-2.5 rounded-lg text-sm font-bold transition-all ${inviteMode ? 'bg-card shadow-sm text-primary' : 'text-muted-foreground'}`}
+          >
+            {t('I was invited', 'मुझे आमंत्रित किया गया')}
           </button>
         </div>
+
+        {!inviteMode ? (
+          <>
+            {/* No loved one connected */}
+            <div className="mb-6 animate-slide-up-delay-1">
+              <div className="bg-muted/50 rounded-2xl p-6 text-center border border-dashed border-muted-foreground/20">
+                <User className="w-10 h-10 text-muted-foreground mx-auto mb-2" />
+                <p className="text-sm font-semibold text-muted-foreground">
+                  {t('No loved one connected yet', 'अभी कोई अपना नहीं जुड़ा')}
+                </p>
+                <p className="text-xs text-muted-foreground mt-1">
+                  {t('Share the code below with your loved one to connect.', 'नीचे दिया गया कोड अपनों को दें।')}
+                </p>
+              </div>
+            </div>
+
+            {/* Pairing code */}
+            <div className="bg-card rounded-2xl p-5 border-2 border-primary/20 shadow-card space-y-4 animate-slide-up-delay-2">
+              <p className="text-sm text-muted-foreground font-semibold">
+                {t('Share this code with your loved one. They will enter it in their app to connect.', 'यह कोड अपनों को दें। वे इसे अपने ऐप में दर्ज करेंगे।')}
+              </p>
+
+              <div
+                onClick={handleCopyCode}
+                className="bg-muted/50 rounded-xl px-4 py-4 cursor-pointer hover:bg-muted transition-colors flex items-center justify-between"
+              >
+                <span className="text-3xl font-black text-primary tracking-[0.25em] font-mono">
+                  {pairingCode || (
+                    <Loader2 className="w-8 h-8 text-primary animate-spin" />
+                  )}
+                </span>
+                {pairingCode && (
+                  <div className="flex items-center gap-1 text-sm">
+                    {copied ? (
+                      <span className="flex items-center gap-1 text-success font-bold">
+                        <CheckCircle2 className="w-4 h-4" />
+                        {t('Copied', 'कॉपी')}
+                      </span>
+                    ) : (
+                      <span className="flex items-center gap-1 text-muted-foreground font-semibold">
+                        <Copy className="w-4 h-4" />
+                        {t('Copy', 'कॉपी')}
+                      </span>
+                    )}
+                  </div>
+                )}
+              </div>
+
+              <button
+                type="button"
+                onClick={() => generatePairingCode(true)}
+                className="w-full flex items-center justify-center gap-2 px-4 py-3 rounded-xl border-2 border-primary/20 hover:border-primary/40 bg-primary/5 hover:bg-primary/10 transition-all text-primary font-bold text-sm"
+              >
+                <RefreshCw className="w-4 h-4" />
+                {t('Generate New Code', 'नया कोड बनाएं')}
+              </button>
+            </div>
+          </>
+        ) : (
+          <div className="bg-card rounded-2xl p-5 border-2 border-primary/20 shadow-card space-y-4 animate-slide-up-delay-2">
+            <p className="text-sm text-muted-foreground font-semibold">
+              {t('Enter the code the primary caregiver shared with you to join as a caregiver.', 'मुख्य देखभालकर्ता द्वारा साझा किया गया कोड दर्ज करें।')}
+            </p>
+            <input
+              type="text"
+              inputMode="numeric"
+              maxLength={6}
+              value={inviteCodeInput}
+              onChange={(e) => {
+                setInviteCodeInput(e.target.value.replace(/\D/g, '').slice(0, 6));
+                setInviteCodeError('');
+              }}
+              placeholder="------"
+              className="w-full text-center text-3xl font-black tracking-[0.3em] py-4 px-4 rounded-xl border-2 border-primary/20 bg-background text-foreground focus:border-primary focus:outline-none font-mono"
+            />
+            {inviteCodeError && (
+              <p className="text-destructive text-sm font-semibold text-center">{inviteCodeError}</p>
+            )}
+            <button
+              type="button"
+              onClick={handleSubmitInviteCode}
+              disabled={inviteCodeInput.length !== 6 || inviteSubmitting}
+              className="w-full elder-tile gradient-primary text-primary-foreground text-elder-lg py-4 disabled:opacity-50 disabled:cursor-not-allowed"
+            >
+              {inviteSubmitting ? (
+                <Loader2 className="w-5 h-5 animate-spin" />
+              ) : (
+                <>
+                  {t('Connect', 'जोड़ें')}
+                  <ArrowRight className="w-5 h-5 ml-2" />
+                </>
+              )}
+            </button>
+          </div>
+        )}
 
         <button
           type="button"

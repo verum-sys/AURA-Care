@@ -35,3 +35,9 @@ dist-ssr
 !postcss.config.js
 !tailwind.config.ts
 !eslint.config.js
+
+# Signing credentials (never commit these)
+android/keystore.properties
+*.keystore
+*.jks
+google-services.json

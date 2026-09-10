@@ -9,6 +9,19 @@ export interface DBUser {
   name: string;
   role: 'senior' | 'caregiver' | null;
   language: string;
+  phone: string | null;
+  date_of_birth: string | null;
+  gender: 'male' | 'female' | 'other' | null;
+  blood_group: string | null;
+  emergency_contact_name: string | null;
+  emergency_contact_phone: string | null;
+  known_conditions: string | null;
+  allergies: string | null;
+  notes: string | null;
+  age: number | null;
+  email: string | null;
+  regular_medication: string | null;
+  habits: string | null;
 }
 
 export interface DBPairingCode {
@@ -21,12 +34,40 @@ export interface DBPairingCode {
 
 export interface DBLink {
   id: string;
-  code: string;
+  code: string | null;
   caregiver_id: string;
   caregiver_name: string;
   senior_id: string;
   senior_name: string;
+  is_primary: boolean;
   linked_at: string;
+  relationship: string | null;
+  onboarding_completed_at: string | null;
+}
+
+export interface DBCaregiverInviteCode {
+  code: string;
+  senior_id: string;
+  senior_name: string;
+  invited_by: string;
+  is_claimed: boolean;
+  claimed_by: string | null;
+  invitee_name: string | null;
+  invitee_age: number | null;
+  invitee_phone: string | null;
+  invitee_email: string | null;
+  created_at: string;
+}
+
+export interface DBRoutine {
+  senior_id: string;
+  wake_time: string;
+  breakfast_time: string;
+  lunch_time: string;
+  dinner_time: string;
+  sleep_time: string;
+  updated_by: string | null;
+  updated_at: string;
 }
 
 export interface DBMedicine {
@@ -39,6 +80,10 @@ export interface DBMedicine {
   frequency: string;
   timing: string;
   before_after_food: 'before' | 'after' | 'with' | 'any';
+  duration_type: 'permanent' | 'temporary';
+  start_date: string;
+  end_date: string | null;
+  times_per_day: number;
   taken: boolean;
   taken_at: string | null;
   is_active: boolean;
@@ -62,6 +107,7 @@ export interface DBAlert {
   time_label: string;
   severity: 'critical' | 'warning' | 'info';
   is_read: boolean;
+  dedupe_key: string | null;
   created_at: string;
 }
 
@@ -241,11 +287,17 @@ export async function claimPairingCode(
     return { success: false, error: 'Invalid or already used code' };
   }
 
-  // One-to-one: check if this senior already has a caregiver
+  if (codeEntry.caregiver_id === seniorId) {
+    return { success: false, error: 'You cannot pair with yourself. Use a different account for the caregiver.' };
+  }
+
+  // A senior can have only one PRIMARY caregiver (secondary caregivers join via a
+  // separate caregiver_invite_codes flow — see claimCaregiverInviteCode).
   const { data: existingSeniorLink } = await supabase
     .from('caregiver_senior_links')
     .select('id')
     .eq('senior_id', seniorId)
+    .eq('is_primary', true)
     .maybeSingle();
 
   if (existingSeniorLink) return { success: false, error: 'You are already connected to a caregiver' };
@@ -259,7 +311,7 @@ export async function claimPairingCode(
 
   if (existingCaregiverLink) return { success: false, error: 'This caregiver is already connected to another loved one' };
 
-  // Create the link
+  // Create the link — pairing codes always create the PRIMARY caregiver relationship.
   const { error: linkErr } = await supabase
     .from('caregiver_senior_links')
     .insert({
@@ -268,6 +320,7 @@ export async function claimPairingCode(
       caregiver_name: codeEntry.caregiver_name,
       senior_id: seniorId,
       senior_name: seniorName,
+      is_primary: true,
     });
 
   if (linkErr) {
@@ -275,12 +328,13 @@ export async function claimPairingCode(
     return { success: false, error: linkErr.message };
   }
 
-  // Mark code as claimed
-  await supabase
-    .from('pairing_codes')
-    .update({ is_claimed: true })
-    .eq('code', code);
-
+  // Deliberately NOT marking the code as claimed: a caregiver's pairing code
+  // is meant to be a stable "my connect code" they can share at any time —
+  // e.g. to reconnect the same senior after a disconnect — not a one-shot
+  // invite that stops working after first use. The one-caregiver-one-senior
+  // checks above already prevent it from being misused to create a second,
+  // conflicting link. Use createNewPairingCode() to explicitly rotate/
+  // invalidate a code if that's ever needed.
   return { success: true };
 }
 
@@ -332,14 +386,23 @@ export async function upsertMedicines(
     frequency: string;
     timing: string;
     beforeAfterFood: 'before' | 'after' | 'with' | 'any';
+    durationType?: 'permanent' | 'temporary';
+    startDate?: string;
+    endDate?: string | null;
+    timesPerDay?: number;
   }>
 ): Promise<DBMedicine[]> {
-  // Deactivate old medicines from this uploader for this senior
+  // Deactivate old PERMANENT medicines from this uploader for this senior — a new
+  // prescription upload replaces the standing permanent list. Temporary medicines are
+  // deliberately excluded here so an unrelated permanent-medicine upload never wipes
+  // a still-active, time-bound temporary medicine (only the primary caregiver removing
+  // it explicitly, via deactivateMedicine, should end a temporary medicine early).
   await supabase
     .from('medicines')
     .update({ is_active: false })
     .eq('senior_id', seniorId)
-    .eq('uploaded_by', uploadedBy);
+    .eq('uploaded_by', uploadedBy)
+    .eq('duration_type', 'permanent');
 
   // Insert new medicines
   const rows = meds.map(m => ({
@@ -351,6 +414,10 @@ export async function upsertMedicines(
     frequency: m.frequency,
     timing: m.timing,
     before_after_food: m.beforeAfterFood,
+    duration_type: m.durationType ?? 'permanent',
+    start_date: m.startDate ?? new Date().toISOString().slice(0, 10),
+    end_date: m.endDate ?? null,
+    times_per_day: m.timesPerDay ?? 1,
     taken: false,
     is_active: true,
   }));
@@ -362,6 +429,16 @@ export async function upsertMedicines(
 
   if (error) throw error;
   return (data ?? []) as DBMedicine[];
+}
+
+/** Explicitly end a temporary medicine early (primary caregiver only, enforced client-side). */
+export async function deactivateMedicine(medicineId: string): Promise<void> {
+  const { error } = await supabase
+    .from('medicines')
+    .update({ is_active: false })
+    .eq('id', medicineId);
+
+  if (error) throw error;
 }
 
 export async function markMedicineTakenDB(medicineId: string, seniorId: string) {
@@ -474,6 +551,23 @@ export async function getAlerts(seniorId: string): Promise<DBAlert[]> {
   return (data ?? []) as DBAlert[];
 }
 
+export async function markAlertRead(id: string): Promise<void> {
+  const { error } = await supabase.from('alerts').update({ is_read: true }).eq('id', id);
+  if (error) throw error;
+}
+
+export async function markAllAlertsRead(seniorId: string): Promise<void> {
+  const { error } = await supabase
+    .from('alerts')
+    .update({ is_read: true })
+    .eq('senior_id', seniorId)
+    .eq('is_read', false);
+  if (error) throw error;
+}
+
+// With a dedupe key the insert is idempotent per (senior, key): the browser
+// fallback and the pg_cron generator (migration 0007) can both attempt the
+// same alert and only the first lands. Returns null when it was a duplicate.
 export async function insertAlert(
   seniorId: string,
   alert: {
@@ -482,21 +576,31 @@ export async function insertAlert(
     messageHi: string;
     timeLabel: string;
     severity: 'critical' | 'warning' | 'info';
-  }
-): Promise<DBAlert> {
-  const { data, error } = await supabase
-    .from('alerts')
-    .insert({
-      senior_id: seniorId,
-      type: alert.type,
-      message: alert.message,
-      message_hi: alert.messageHi,
-      time_label: alert.timeLabel,
-      severity: alert.severity,
-    })
-    .select()
-    .single();
+  },
+  dedupeKey?: string
+): Promise<DBAlert | null> {
+  const base = {
+    senior_id: seniorId,
+    type: alert.type,
+    message: alert.message,
+    message_hi: alert.messageHi,
+    time_label: alert.timeLabel,
+    severity: alert.severity,
+  };
 
+  if (dedupeKey) {
+    const { data, error } = await supabase
+      .from('alerts')
+      .upsert({ ...base, dedupe_key: dedupeKey }, { onConflict: 'senior_id,dedupe_key', ignoreDuplicates: true })
+      .select()
+      .maybeSingle();
+    // Migration 0007 not applied yet → the column doesn't exist; fall back to
+    // a plain insert so the alert still fires.
+    if (!error) return (data as DBAlert | null) ?? null;
+    if (!/dedupe_key/.test(error.message)) throw error;
+  }
+
+  const { data, error } = await supabase.from('alerts').insert(base).select().single();
   if (error) throw error;
   return data as DBAlert;
 }
@@ -569,4 +673,338 @@ export async function getWellbeingHistory(
 
   if (error) throw error;
   return (data ?? []) as DBWellbeing[];
+}
+
+// ─── Senior Routine ──────────────────────────────────────
+
+export async function getSeniorRoutine(seniorId: string): Promise<DBRoutine | null> {
+  const { data, error } = await supabase
+    .from('senior_routines')
+    .select('*')
+    .eq('senior_id', seniorId)
+    .maybeSingle();
+
+  if (error) throw error;
+  return data as DBRoutine | null;
+}
+
+export async function upsertSeniorRoutine(
+  seniorId: string,
+  updatedBy: string,
+  routine: {
+    wakeTime: string;
+    breakfastTime: string;
+    lunchTime: string;
+    dinnerTime: string;
+    sleepTime: string;
+  }
+): Promise<DBRoutine> {
+  const { data, error } = await supabase
+    .from('senior_routines')
+    .upsert({
+      senior_id: seniorId,
+      wake_time: routine.wakeTime,
+      breakfast_time: routine.breakfastTime,
+      lunch_time: routine.lunchTime,
+      dinner_time: routine.dinnerTime,
+      sleep_time: routine.sleepTime,
+      updated_by: updatedBy,
+    }, { onConflict: 'senior_id' })
+    .select()
+    .single();
+
+  if (error) throw error;
+  return data as DBRoutine;
+}
+
+// ─── Patient Details ─────────────────────────────────────
+
+// Generic per-user profile update — despite the name/first-param label this
+// just updates the `users` row by clerk_id, so it's reused for BOTH a
+// senior's patient details (via the caregiver-facing PatientDetails page and
+// onboarding step 2) AND a caregiver's own profile (onboarding step 1),
+// since each identity has its own independent row keyed by its own clerk_id.
+export async function updatePatientDetails(
+  seniorId: string,
+  details: Partial<{
+    name: string;
+    phone: string | null;
+    dateOfBirth: string | null;
+    gender: 'male' | 'female' | 'other' | null;
+    bloodGroup: string | null;
+    emergencyContactName: string | null;
+    emergencyContactPhone: string | null;
+    knownConditions: string | null;
+    allergies: string | null;
+    notes: string | null;
+    age: number | null;
+    email: string | null;
+    regularMedication: string | null;
+    habits: string | null;
+  }>
+): Promise<DBUser> {
+  const payload: Record<string, unknown> = {};
+  if ('name' in details) payload.name = details.name;
+  if ('phone' in details) payload.phone = details.phone;
+  if ('dateOfBirth' in details) payload.date_of_birth = details.dateOfBirth;
+  if ('gender' in details) payload.gender = details.gender;
+  if ('bloodGroup' in details) payload.blood_group = details.bloodGroup;
+  if ('emergencyContactName' in details) payload.emergency_contact_name = details.emergencyContactName;
+  if ('emergencyContactPhone' in details) payload.emergency_contact_phone = details.emergencyContactPhone;
+  if ('knownConditions' in details) payload.known_conditions = details.knownConditions;
+  if ('allergies' in details) payload.allergies = details.allergies;
+  if ('notes' in details) payload.notes = details.notes;
+  if ('age' in details) payload.age = details.age;
+  if ('email' in details) payload.email = details.email;
+  if ('regularMedication' in details) payload.regular_medication = details.regularMedication;
+  if ('habits' in details) payload.habits = details.habits;
+
+  const { data, error } = await supabase
+    .from('users')
+    .update(payload)
+    .eq('clerk_id', seniorId)
+    .select()
+    .single();
+
+  if (error) throw error;
+  return data as DBUser;
+}
+
+// Onboarding: caregiver's relationship to this specific senior (a property
+// of the pair, not either identity alone — different caregivers linked to
+// the same senior can have different relationships).
+export async function updateLinkRelationship(caregiverId: string, relationship: string): Promise<void> {
+  const { error } = await supabase
+    .from('caregiver_senior_links')
+    .update({ relationship })
+    .eq('caregiver_id', caregiverId);
+  if (error) throw error;
+}
+
+// Onboarding: marks the one-time wizard as finished for this caregiver<->senior
+// link. NULL (never set) means "not completed yet" — skipping a step never
+// calls this, which is what makes the wizard resumable rather than lost.
+export async function markOnboardingComplete(caregiverId: string): Promise<void> {
+  const { error } = await supabase
+    .from('caregiver_senior_links')
+    .update({ onboarding_completed_at: new Date().toISOString() })
+    .eq('caregiver_id', caregiverId);
+  if (error) throw error;
+}
+
+// Denormalized display-name sync — caregiver_senior_links.caregiver_name /
+// senior_name are denormalized copies of users.name, read directly by
+// dashboards (linkedSenior.caregiverName / activeSeniorName) without a join.
+// Renaming a person via onboarding must keep both in sync.
+export async function renameCaregiverOnLinks(caregiverId: string, name: string): Promise<void> {
+  const { error } = await supabase
+    .from('caregiver_senior_links')
+    .update({ caregiver_name: name })
+    .eq('caregiver_id', caregiverId);
+  if (error) throw error;
+}
+
+export async function renameSeniorOnLinks(seniorId: string, name: string): Promise<void> {
+  const { error } = await supabase
+    .from('caregiver_senior_links')
+    .update({ senior_name: name })
+    .eq('senior_id', seniorId);
+  if (error) throw error;
+}
+
+// ─── Secondary Caregiver Invites ─────────────────────────
+// Distinct from pairing_codes: pairing codes create a NEW senior identity; invite
+// codes attach a NEW caregiver to an EXISTING senior as a non-primary (read-only).
+
+export async function createCaregiverInviteCode(
+  seniorId: string,
+  seniorName: string,
+  invitedBy: string,
+  invitee?: { name?: string; age?: number | null; phone?: string; email?: string }
+): Promise<string> {
+  const { data: existing } = await supabase
+    .from('caregiver_invite_codes')
+    .select('code')
+    .eq('senior_id', seniorId)
+    .eq('is_claimed', false)
+    .order('created_at', { ascending: false })
+    .limit(1)
+    .maybeSingle();
+
+  if (existing) {
+    // Reusing the still-unclaimed code — refresh who it's for if given.
+    if (invitee) {
+      await supabase
+        .from('caregiver_invite_codes')
+        .update({ invitee_name: invitee.name, invitee_age: invitee.age, invitee_phone: invitee.phone, invitee_email: invitee.email })
+        .eq('code', existing.code);
+    }
+    return existing.code;
+  }
+
+  let code: string;
+  let attempts = 0;
+  do {
+    code = generateCodeString();
+    const { data: clash } = await supabase
+      .from('caregiver_invite_codes')
+      .select('code')
+      .eq('code', code)
+      .maybeSingle();
+    if (!clash) break;
+    attempts++;
+  } while (attempts < 20);
+
+  const { error } = await supabase
+    .from('caregiver_invite_codes')
+    .insert({
+      code,
+      senior_id: seniorId,
+      senior_name: seniorName,
+      invited_by: invitedBy,
+      invitee_name: invitee?.name ?? null,
+      invitee_age: invitee?.age ?? null,
+      invitee_phone: invitee?.phone ?? null,
+      invitee_email: invitee?.email ?? null,
+    });
+
+  if (error) throw error;
+  return code;
+}
+
+export async function getActiveCaregiverInviteCode(seniorId: string): Promise<string | null> {
+  const { data } = await supabase
+    .from('caregiver_invite_codes')
+    .select('code')
+    .eq('senior_id', seniorId)
+    .eq('is_claimed', false)
+    .order('created_at', { ascending: false })
+    .limit(1)
+    .maybeSingle();
+
+  return data?.code ?? null;
+}
+
+// Unclaimed invites, most recent first — shown as a "pending" list on the
+// Care Team page alongside already-linked caregivers.
+export async function getPendingCaregiverInvites(seniorId: string): Promise<DBCaregiverInviteCode[]> {
+  const { data, error } = await supabase
+    .from('caregiver_invite_codes')
+    .select('*')
+    .eq('senior_id', seniorId)
+    .eq('is_claimed', false)
+    .order('created_at', { ascending: false });
+
+  if (error) throw error;
+  return data as DBCaregiverInviteCode[];
+}
+
+export async function claimCaregiverInviteCode(
+  code: string,
+  newCaregiverId: string,
+  newCaregiverName: string
+): Promise<{ success: boolean; error?: string }> {
+  await supabase
+    .from('users')
+    .upsert({ clerk_id: newCaregiverId, name: newCaregiverName }, { onConflict: 'clerk_id' });
+
+  const { data: codeEntry, error: findErr } = await supabase
+    .from('caregiver_invite_codes')
+    .select('*')
+    .eq('code', code)
+    .eq('is_claimed', false)
+    .maybeSingle();
+
+  if (findErr) return { success: false, error: findErr.message };
+  if (!codeEntry) return { success: false, error: 'Invalid or already used code' };
+  if (codeEntry.senior_id === newCaregiverId) {
+    return { success: false, error: 'You cannot invite yourself.' };
+  }
+
+  // This caregiver account must not already be linked to a different senior.
+  const { data: existingCaregiverLink } = await supabase
+    .from('caregiver_senior_links')
+    .select('id')
+    .eq('caregiver_id', newCaregiverId)
+    .maybeSingle();
+
+  if (existingCaregiverLink) {
+    return { success: false, error: 'This account is already connected to a loved one.' };
+  }
+
+  const { error: linkErr } = await supabase
+    .from('caregiver_senior_links')
+    .insert({
+      caregiver_id: newCaregiverId,
+      caregiver_name: newCaregiverName,
+      senior_id: codeEntry.senior_id,
+      senior_name: codeEntry.senior_name,
+      is_primary: false,
+    });
+
+  if (linkErr) return { success: false, error: linkErr.message };
+
+  await supabase
+    .from('caregiver_invite_codes')
+    .update({ is_claimed: true, claimed_by: newCaregiverId })
+    .eq('code', code);
+
+  return { success: true };
+}
+
+// ─── Push Subscriptions ───────────────────────────────────
+
+export async function savePushSubscription(
+  userId: string,
+  sub: { endpoint: string; p256dh: string; auth: string; userAgent?: string }
+): Promise<void> {
+  const { error } = await supabase
+    .from('push_subscriptions')
+    .upsert({
+      user_id: userId,
+      endpoint: sub.endpoint,
+      p256dh: sub.p256dh,
+      auth: sub.auth,
+      user_agent: sub.userAgent ?? null,
+    }, { onConflict: 'endpoint' });
+
+  if (error) throw error;
+}
+
+export async function deletePushSubscription(endpoint: string): Promise<void> {
+  const { error } = await supabase
+    .from('push_subscriptions')
+    .delete()
+    .eq('endpoint', endpoint);
+
+  if (error) throw error;
+}
+
+export async function getPushSubscriptions(userId: string): Promise<{ endpoint: string }[]> {
+  const { data, error } = await supabase
+    .from('push_subscriptions')
+    .select('endpoint')
+    .eq('user_id', userId);
+
+  if (error) throw error;
+  return data ?? [];
+}
+
+// ─── FCM Tokens (native app) ──────────────────────────────
+
+export async function saveFcmToken(userId: string, token: string): Promise<void> {
+  const { error } = await supabase
+    .from('fcm_tokens')
+    .upsert({ user_id: userId, token }, { onConflict: 'token' });
+
+  if (error) throw error;
+}
+
+export async function deleteFcmToken(token: string): Promise<void> {
+  const { error } = await supabase
+    .from('fcm_tokens')
+    .delete()
+    .eq('token', token);
+
+  if (error) throw error;
 }

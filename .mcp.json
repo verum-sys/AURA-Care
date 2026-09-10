@@ -2,7 +2,16 @@
   "mcpServers": {
     "guardian-voice-tester": {
       "command": "node",
-      "args": ["mcp/voice-tester.mjs"]
+      "args": [
+        "mcp/voice-tester.mjs"
+      ]
+    },
+    "code-review-graph": {
+      "command": "code-review-graph",
+      "args": [
+        "serve"
+      ],
+      "type": "stdio"
     }
   }
 }

@@ -1,6 +1,6 @@
-import { useState, useEffect } from 'react';
+import { useState } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { Pill, UtensilsCrossed, SmilePlus, Clock, Wifi, Battery, AlertTriangle, Bell, Copy, CheckCircle2, RefreshCw, Link, User, Scan, Activity, ArrowRight, History } from 'lucide-react';
+import { Pill, UtensilsCrossed, SmilePlus, Clock, Wifi, Battery, AlertTriangle, Bell, Copy, CheckCircle2, Link, User, Scan, Activity, ArrowRight, History, CalendarClock, FileHeart, Users, Lock, UserCog, Trash2 } from 'lucide-react';
 import CaregiverLayout from '@/components/CaregiverLayout';
 import { useApp } from '@/context/AppContext';
 import { caregiverOverview } from '@/data/dummyData';
@@ -25,15 +25,8 @@ const ProgressRing = ({ percent, size = 72, stroke = 6 }: { percent: number; siz
 
 const Overview = () => {
   const navigate = useNavigate();
-  const { t, wellbeing, sharedMedicines, dynamicAlerts, pairingCode, generatePairingCode, activeSeniorName, linkedSenior, currentUserId, currentUserName } = useApp();
+  const { t, wellbeing, sharedMedicines, dynamicAlerts, pairingCode, activeSeniorName, linkedSenior, isPrimaryCaregiver, needsOnboarding } = useApp();
   const [copied, setCopied] = useState(false);
-
-  // Auto-generate pairing code if caregiver doesn't have one yet
-  useEffect(() => {
-    if (currentUserId && !pairingCode) {
-      generatePairingCode();
-    }
-  }, [currentUserId, pairingCode, generatePairingCode]);
 
   const showDashboard = !!linkedSenior;
 
@@ -55,78 +48,60 @@ const Overview = () => {
   };
 
   return (
-    <CaregiverLayout>
-      {/* ═══ Not connected state ═══ */}
+    <CaregiverLayout title={t('Settings', 'सेटिंग्स')}>
+      {/* ═══ Not connected state — the main connect flow now lives on Home;
+          this is just a lightweight redirRect-style fallback in case
+          Settings is opened before connecting. ═══ */}
       {!linkedSenior && (
-        <div className="animate-slide-up">
-          <div className="glass-card rounded-2xl p-6 text-center">
-            <div className="w-16 h-16 rounded-2xl bg-primary/10 flex items-center justify-center mx-auto mb-4">
-              <Link className="w-8 h-8 text-primary" />
-            </div>
-            <h3 className="text-lg font-black text-foreground mb-1">{t('Connect a Loved One', 'अपनों को जोड़ें')}</h3>
-            <p className="text-sm text-muted-foreground mb-5">
-              {t('Share this code with them to get started', 'शुरू करने के लिए यह कोड उन्हें दें')}
-            </p>
-
-            <div
-              onClick={handleCopyCode}
-              className="bg-muted/60 rounded-2xl px-5 py-4 cursor-pointer hover:bg-muted transition-colors flex items-center justify-between mb-3"
-            >
-              <span className="text-3xl font-black text-primary tracking-[0.25em] font-mono">
-                {pairingCode || '------'}
-              </span>
-              {copied ? (
-                <span className="flex items-center gap-1 text-success font-bold text-sm">
-                  <CheckCircle2 className="w-4 h-4" /> {t('Copied', 'कॉपी')}
-                </span>
-              ) : (
-                <span className="flex items-center gap-1 text-muted-foreground font-semibold text-sm">
-                  <Copy className="w-4 h-4" /> {t('Copy', 'कॉपी')}
-                </span>
-              )}
-            </div>
-
-            <button
-              type="button"
-              onClick={() => { generatePairingCode(true); }}
-              className="w-full flex items-center justify-center gap-2 px-4 py-3 rounded-xl border-2 border-primary/20 hover:border-primary/40 bg-primary/5 hover:bg-primary/10 transition-all text-primary font-bold text-sm"
-            >
-              <RefreshCw className="w-4 h-4" />
-              {t('Generate New Code', 'नया कोड बनाएं')}
-            </button>
+        <div className="animate-slide-up glass-card rounded-2xl p-6 text-center">
+          <div className="w-16 h-16 rounded-2xl bg-primary/10 flex items-center justify-center mx-auto mb-4">
+            <Link className="w-8 h-8 text-primary" />
           </div>
-        </div>
-      )}
-
-      {/* ═══ Pairing code (always visible for caregiver) ═══ */}
-      {linkedSenior && pairingCode && (
-        <div className="glass-card rounded-2xl p-4 flex items-center justify-between animate-slide-up mb-4">
-          <div className="flex items-center gap-3">
-            <div className="w-9 h-9 rounded-xl bg-primary/10 flex items-center justify-center flex-shrink-0">
-              <Link className="w-4.5 h-4.5 text-primary" />
-            </div>
-            <div>
-              <p className="text-xs text-muted-foreground font-semibold">{t('Your Pairing Code', 'आपका पेयरिंग कोड')}</p>
-              <p className="text-lg font-black text-primary tracking-[0.15em] font-mono">{pairingCode}</p>
-            </div>
-          </div>
-          <button
-            type="button"
-            onClick={handleCopyCode}
-            className="flex items-center gap-1.5 px-3 py-2 rounded-xl bg-primary/10 hover:bg-primary/20 transition-colors"
-          >
-            {copied ? (
-              <><CheckCircle2 className="w-4 h-4 text-success" /><span className="text-xs font-bold text-success">{t('Copied', 'कॉपी')}</span></>
-            ) : (
-              <><Copy className="w-4 h-4 text-primary" /><span className="text-xs font-bold text-primary">{t('Copy', 'कॉपी')}</span></>
-            )}
-          </button>
+          <h3 className="text-lg font-black text-foreground mb-1">{t('Not Connected Yet', 'अभी नहीं जुड़े')}</h3>
+          <p className="text-sm text-muted-foreground">
+            {t('Go to Home to get your connect code and add a loved one.', 'अपना कनेक्ट कोड पाने के लिए होम पर जाएं और अपनों को जोड़ें।')}
+          </p>
         </div>
       )}
 
       {/* ═══ Connected dashboard ═══ */}
       {showDashboard && (
         <div className="space-y-4">
+          {!isPrimaryCaregiver && (
+            <div className="flex items-center gap-2 p-3 rounded-2xl bg-muted/60 border border-border animate-slide-up">
+              <Lock className="w-4 h-4 text-muted-foreground flex-shrink-0" />
+              <p className="text-xs font-semibold text-muted-foreground">
+                {t('You have read-only access. Only the primary caregiver can make changes.', 'आपके पास केवल-पढ़ने की पहुँच है। केवल मुख्य देखभालकर्ता बदलाव कर सकते हैं।')}
+              </p>
+            </div>
+          )}
+
+          {/* My connect code — always available, not just before first connecting.
+              Same code works anytime, e.g. to reconnect this dependant if they
+              ever get disconnected (see claimPairingCode: codes aren't single-use). */}
+          {isPrimaryCaregiver && (
+            <div
+              onClick={handleCopyCode}
+              className="flex items-center justify-between gap-3 p-3.5 rounded-2xl bg-primary/5 border border-primary/15 cursor-pointer hover:bg-primary/10 transition-colors animate-slide-up"
+            >
+              <div className="min-w-0">
+                <p className="text-[11px] text-muted-foreground font-semibold">{t('My Code', 'मेरा कोड')}</p>
+                <span className="text-xl font-black text-primary tracking-[0.2em] font-mono">
+                  {pairingCode || '------'}
+                </span>
+              </div>
+              {copied ? (
+                <span className="flex items-center gap-1 text-success font-bold text-xs flex-shrink-0">
+                  <CheckCircle2 className="w-3.5 h-3.5" /> {t('Copied', 'कॉपी')}
+                </span>
+              ) : (
+                <span className="flex items-center gap-1 text-muted-foreground font-semibold text-xs flex-shrink-0">
+                  <Copy className="w-3.5 h-3.5" /> {t('Copy', 'कॉपी')}
+                </span>
+              )}
+            </div>
+          )}
+
           {/* Profile + Adherence ring card */}
           <div className="relative gradient-hero rounded-2xl p-5 text-primary-foreground overflow-hidden animate-slide-up">
             <div className="absolute -top-6 -right-6 w-28 h-28 rounded-full bg-white/5" />
@@ -142,7 +117,7 @@ const Overview = () => {
               </div>
 
               <div className="flex-1 min-w-0">
-                <p className="text-xs font-semibold opacity-70">{t('Care Dashboard', 'देखभाल डैशबोर्ड')} · {currentUserName}</p>
+                <p className="text-xs font-semibold opacity-70">{t('Care Dashboard', 'देखभाल डैशबोर्ड')}</p>
                 <h2 className="text-xl font-black truncate">{activeSeniorName}</h2>
                 <div className="flex items-center gap-1.5 mt-1 opacity-75">
                   <Activity className="w-3.5 h-3.5" />
@@ -172,21 +147,98 @@ const Overview = () => {
             </button>
           )}
 
-          {/* Scan Prescription */}
+          {/* Scan Prescription — primary only */}
+          {isPrimaryCaregiver && (
+            <button
+              type="button"
+              onClick={() => navigate('/caregiver/scan')}
+              className="action-tile w-full bg-card text-foreground border border-primary/15 animate-slide-up-delay-1"
+            >
+              <div className="stat-icon-bg gradient-primary">
+                <Scan className="w-5 h-5 text-white" />
+              </div>
+              <div className="flex-1 text-left">
+                <p className="font-bold text-foreground">{t('Scan Prescription', 'प्रिस्क्रिप्शन स्कैन करें')}</p>
+                <p className="text-xs text-muted-foreground font-semibold">{t('Upload or take a photo', 'अपलोड या फोटो लें')}</p>
+              </div>
+              <ArrowRight className="w-5 h-5 text-muted-foreground" />
+            </button>
+          )}
+
+          {/* Daily Routine */}
           <button
             type="button"
-            onClick={() => navigate('/caregiver/scan')}
-            className="action-tile w-full bg-card text-foreground border border-primary/15 animate-slide-up-delay-1"
+            onClick={() => navigate('/caregiver/routine')}
+            className="action-tile w-full bg-card text-foreground border border-border animate-slide-up-delay-1"
           >
-            <div className="stat-icon-bg gradient-primary">
-              <Scan className="w-5 h-5 text-white" />
+            <div className="stat-icon-bg bg-primary/10">
+              <CalendarClock className="w-5 h-5 text-primary" />
             </div>
             <div className="flex-1 text-left">
-              <p className="font-bold text-foreground">{t('Scan Prescription', 'प्रिस्क्रिप्शन स्कैन करें')}</p>
-              <p className="text-xs text-muted-foreground font-semibold">{t('Upload or take a photo', 'अपलोड या फोटो लें')}</p>
+              <p className="font-bold text-foreground">{t('Daily Routine', 'दैनिक दिनचर्या')}</p>
+              <p className="text-xs text-muted-foreground font-semibold">{t('Wake, meals & sleep times', 'जागना, भोजन और सोने का समय')}</p>
             </div>
             <ArrowRight className="w-5 h-5 text-muted-foreground" />
           </button>
+
+          {/* Profiles — everyone's static info, grouped together rather than
+              scattered as loose settings rows. */}
+          <div className="animate-slide-up-delay-1">
+            <h3 className="text-sm font-black text-foreground mb-3">{t('Profiles', 'प्रोफाइल')}</h3>
+            <div className="space-y-2">
+              {/* Your Own Profile — collected once via the onboarding wizard,
+                  but always reachable here since it's the only place to edit it
+                  once onboarding is complete. */}
+              <button
+                type="button"
+                onClick={() => navigate('/caregiver/onboarding')}
+                className="action-tile w-full bg-card text-foreground border border-border"
+              >
+                <div className="stat-icon-bg bg-primary/10">
+                  <UserCog className="w-5 h-5 text-primary" />
+                </div>
+                <div className="flex-1 text-left">
+                  <p className="font-bold text-foreground">
+                    {needsOnboarding ? t('Complete Your Profile', 'अपनी प्रोफ़ाइल पूरी करें') : t('Edit Your Profile', 'अपनी प्रोफ़ाइल संपादित करें')}
+                  </p>
+                  <p className="text-xs text-muted-foreground font-semibold">{t('Your info & relationship to them', 'आपकी जानकारी और उनसे रिश्ता')}</p>
+                </div>
+                <ArrowRight className="w-5 h-5 text-muted-foreground" />
+              </button>
+
+              {/* Dependant Profile */}
+              <button
+                type="button"
+                onClick={() => navigate('/caregiver/patient-details')}
+                className="action-tile w-full bg-card text-foreground border border-border"
+              >
+                <div className="stat-icon-bg bg-secondary/10">
+                  <FileHeart className="w-5 h-5 text-secondary" />
+                </div>
+                <div className="flex-1 text-left">
+                  <p className="font-bold text-foreground">{t('Dependant Profile', 'आश्रित प्रोफ़ाइल')}</p>
+                  <p className="text-xs text-muted-foreground font-semibold">{t('Health info & emergency contact', 'स्वास्थ्य जानकारी और आपातकालीन संपर्क')}</p>
+                </div>
+                <ArrowRight className="w-5 h-5 text-muted-foreground" />
+              </button>
+
+              {/* Secondary/Tertiary Caregiver Profiles (Care Team / Invite) */}
+              <button
+                type="button"
+                onClick={() => navigate('/caregiver/invite')}
+                className="action-tile w-full bg-card text-foreground border border-border"
+              >
+                <div className="stat-icon-bg bg-warning/10">
+                  <Users className="w-5 h-5 text-warning" />
+                </div>
+                <div className="flex-1 text-left">
+                  <p className="font-bold text-foreground">{t('Care Team', 'देखभाल टीम')}</p>
+                  <p className="text-xs text-muted-foreground font-semibold">{t('Secondary & tertiary caregiver profiles', 'द्वितीयक और तृतीयक देखभालकर्ता प्रोफाइल')}</p>
+                </div>
+                <ArrowRight className="w-5 h-5 text-muted-foreground" />
+              </button>
+            </div>
+          </div>
 
           {/* Stat grid */}
           <div className="grid grid-cols-2 gap-3 animate-slide-up-delay-2">
@@ -299,6 +351,22 @@ const Overview = () => {
                   ? t(`${criticalCount} need attention`, `${criticalCount} पर ध्यान दें`)
                   : t('No critical alerts', 'कोई गंभीर अलर्ट नहीं')
                 }
+              </p>
+            </div>
+            <ArrowRight className="w-4 h-4 text-muted-foreground" />
+          </button>
+
+          {/* Danger zone */}
+          <button
+            type="button"
+            onClick={() => navigate('/delete-account')}
+            className="w-full flex items-center gap-3 p-4 rounded-2xl border border-destructive/20 bg-destructive/5 transition-all active:scale-[0.98] animate-slide-up-delay-3"
+          >
+            <Trash2 className="w-5 h-5 flex-shrink-0 text-destructive" />
+            <div className="flex-1 text-left">
+              <span className="text-sm font-bold text-destructive">{t('Delete Account', 'खाता हटाएं')}</span>
+              <p className="text-xs text-muted-foreground font-semibold">
+                {t('Permanently delete your account and all data', 'अपना खाता और सभी डेटा स्थायी रूप से हटाएं')}
               </p>
             </div>
             <ArrowRight className="w-4 h-4 text-muted-foreground" />

@@ -1,18 +1,27 @@
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { Sun, Moon, CloudSun, Shield, Users, User, ArrowRight, Loader2, Pill, UtensilsCrossed, SmilePlus, Heart, Phone } from 'lucide-react';
 import SeniorLayout from '@/components/SeniorLayout';
+import PushOptInBanner from '@/components/PushOptInBanner';
 import { useApp } from '@/context/AppContext';
 import { toast } from '@/hooks/use-toast';
 
 const Welcome = () => {
   const navigate = useNavigate();
-  const { t, linkedCaregiver, linkWithCode, addAlert, sharedMedicines, wellbeing, currentUserName } = useApp();
+  const { t, linkedCaregiver, linkWithCode, addAlert, sharedMedicines, wellbeing, currentUserName, refreshData } = useApp();
   const [showCodeInput, setShowCodeInput] = useState(false);
   const [codeInput, setCodeInput] = useState('');
   const [codeError, setCodeError] = useState('');
   const [submitting, setSubmitting] = useState(false);
   const [sosPressed, setSosPressed] = useState(false);
+
+  // This is the senior's main hub — refresh whenever it's visited so
+  // anything the caregiver just changed (new medicines, routine, etc.)
+  // shows up without needing a full page reload.
+  useEffect(() => {
+    refreshData();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   const handleSOS = async () => {
     if (sosPressed) return; // prevent double-tap
@@ -50,6 +59,10 @@ const Welcome = () => {
         toast({ title: t('Connected to caregiver!', 'देखभालकर्ता से जुड़ गए!') });
         setCodeInput('');
         setShowCodeInput(false);
+      } else if (result.error === 'You are already connected to a caregiver') {
+        setCodeError(t('You are already connected to a caregiver.', 'आप पहले से एक देखभालकर्ता से जुड़े हैं।'));
+      } else if (result.error === 'This caregiver is already connected to another loved one') {
+        setCodeError(t('This caregiver is already connected to another loved one.', 'यह देखभालकर्ता पहले से किसी और अपने से जुड़ा है।'));
       } else {
         setCodeError(t('Invalid code. Please check with your caregiver.', 'अमान्य कोड। कृपया अपने देखभालकर्ता से जाँच करें।'));
       }
@@ -118,29 +131,6 @@ const Welcome = () => {
             </div>
           )}
         </div>
-      </div>
-
-      {/* Emergency SOS Button */}
-      <div className="mt-6 animate-slide-up">
-        <button
-          type="button"
-          onClick={handleSOS}
-          disabled={sosPressed}
-          className={`w-full py-5 rounded-2xl flex items-center justify-center gap-3 text-white font-black text-elder-xl shadow-glow-emergency transition-all active:scale-[0.97] ${
-            sosPressed
-              ? 'bg-gray-400 cursor-not-allowed'
-              : 'gradient-emergency animate-pulse'
-          }`}
-        >
-          <Phone className="w-7 h-7" />
-          {sosPressed
-            ? t('SOS Sent — Help is coming', 'SOS भेजा गया — मदद आ रही है')
-            : t('Emergency SOS', 'आपातकालीन SOS')
-          }
-        </button>
-        <p className="text-xs text-muted-foreground text-center mt-1.5 font-semibold">
-          {t('Tap to instantly alert your caregiver', 'अपने देखभालकर्ता को तुरंत सूचित करने के लिए टैप करें')}
-        </p>
       </div>
 
       {/* Action tiles */}
@@ -213,6 +203,34 @@ const Welcome = () => {
             <p className="text-xs text-muted-foreground font-semibold">{t('Log your meals', 'अपना भोजन दर्ज करें')}</p>
           </div>
         </button>
+      </div>
+
+      {/* Emergency SOS Button */}
+      <div className="mt-6 animate-slide-up">
+        <button
+          type="button"
+          onClick={handleSOS}
+          disabled={sosPressed}
+          className={`w-full py-5 rounded-2xl flex items-center justify-center gap-3 text-white font-black text-elder-xl shadow-glow-emergency transition-all active:scale-[0.97] ${
+            sosPressed
+              ? 'bg-gray-400 cursor-not-allowed'
+              : 'gradient-emergency animate-pulse'
+          }`}
+        >
+          <Phone className="w-7 h-7" />
+          {sosPressed
+            ? t('SOS Sent — Help is coming', 'SOS भेजा गया — मदद आ रही है')
+            : t('Emergency SOS', 'आपातकालीन SOS')
+          }
+        </button>
+        <p className="text-xs text-muted-foreground text-center mt-1.5 font-semibold">
+          {t('Tap to instantly alert your caregiver', 'अपने देखभालकर्ता को तुरंत सूचित करने के लिए टैप करें')}
+        </p>
+      </div>
+
+      {/* Push reminders opt-in */}
+      <div className="mt-6">
+        <PushOptInBanner />
       </div>
 
       {/* Caregiver card */}

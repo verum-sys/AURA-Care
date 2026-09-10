@@ -1,3 +1,4 @@
+import { useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { Check, Clock, Pill, Utensils, History } from 'lucide-react';
 import SeniorLayout from '@/components/SeniorLayout';
@@ -6,7 +7,15 @@ import { toast } from '@/hooks/use-toast';
 
 const Medicines = () => {
   const navigate = useNavigate();
-  const { t, sharedMedicines, markMedicineTaken } = useApp();
+  const { t, sharedMedicines, markMedicineTaken, refreshData } = useApp();
+
+  // sharedMedicines only loads once per AppContext mount — refresh whenever
+  // this screen is visited so newly-added medicines (added by the caregiver
+  // while this tab was already open) actually show up without a full reload.
+  useEffect(() => {
+    refreshData();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   const pendingMeds = sharedMedicines.filter(m => !m.taken);
   const takenMeds = sharedMedicines.filter(m => m.taken);

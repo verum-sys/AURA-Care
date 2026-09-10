@@ -8,11 +8,13 @@ import { useSpeechRecognition } from '@/hooks/useSpeechRecognition';
 import { processVoiceCommand, AgentAction } from '@/lib/voiceAgent';
 import { Capacitor } from '@capacitor/core';
 import { TextToSpeech } from '@capacitor-community/text-to-speech';
+import { initNotifications, hashToNotificationId, scheduleReminderNotification, cancelReminderNotifications } from '@/lib/notifications';
+import { withScheduleDefaults } from '@/lib/medicineSchedule';
 
 type AgentState = 'idle' | 'listening' | 'processing' | 'responding' | 'error';
 
 // Conversation question types for multi-turn flow
-type ConvoStep = 'medicine' | 'meal' | 'caretaker' | null;
+type ConvoStep = 'medicine' | 'meal' | 'wellbeing' | 'caretaker' | null;
 
 const VoiceAssistantButton = () => {
   const {
@@ -44,6 +46,19 @@ const VoiceAssistantButton = () => {
   // Track notification timeouts for medicine reminders
   const notifTimeoutsRef = useRef<ReturnType<typeof setTimeout>[]>([]);
   useEffect(() => () => { notifTimeoutsRef.current.forEach(clearTimeout); }, []);
+
+  // Track scheduled OS-level notification ids so they can be cancelled/rescheduled
+  const osNotifIdsRef = useRef<number[]>([]);
+  useEffect(() => () => { cancelReminderNotifications(osNotifIdsRef.current); }, []);
+
+  // Request notification permission (and create the Android channel) once on start —
+  // without this the OS "Notifications" toggle for the app has nothing to control.
+  const notifInitRef = useRef(false);
+  useEffect(() => {
+    if (loading || notifInitRef.current) return;
+    notifInitRef.current = true;
+    initNotifications();
+  }, [loading]);
 
   // ─── Robust speak helper: native TTS on mobile, Web Speech API on browser ───
   const doSpeak = useCallback((text: string, onEnd?: () => void) => {
@@ -148,6 +163,11 @@ const VoiceAssistantButton = () => {
           : `क्या आपने ${mealHi} खाया?`;
         break;
       }
+      case 'wellbeing':
+        question = language === 'en'
+          ? 'How are you feeling today? Good, okay, or not well?'
+          : 'आज आप कैसा महसूस कर रहे हैं? अच्छा, ठीक, या अच्छा नहीं?';
+        break;
       case 'caretaker':
         question = language === 'en'
           ? 'Would you like to call your caretaker?'
@@ -240,6 +260,49 @@ const VoiceAssistantButton = () => {
         }
         break;
       }
+      case 'wellbeing': {
+        const painAreas: Record<string, string> = {
+          head: 'head', sir: 'head', headache: 'head',
+          chest: 'chest', seena: 'chest',
+          stomach: 'stomach', pet: 'stomach', tummy: 'stomach',
+          back: 'back', kamar: 'back',
+          leg: 'legs', legs: 'legs', pair: 'legs', knee: 'legs',
+        };
+        let painArea: string | null = null;
+        for (const [keyword, area] of Object.entries(painAreas)) {
+          if (lower.includes(keyword)) { painArea = area; break; }
+        }
+
+        if (lower.match(/(not\s+well|not\s+good|sick|unwell|bad|pain|hurt|ache|दर्द)/)) {
+          await setWellbeing({ mood: 'not_well', painArea, timestamp: new Date().toISOString() });
+          await addAlert({
+            type: 'distress',
+            message: `Reported feeling unwell during check-in${painArea ? ` – ${painArea} area` : ''}.`,
+            messageHi: `जांच के दौरान अस्वस्थ महसूस किया${painArea ? ` – ${painArea} क्षेत्र` : ''}।`,
+            time: new Date().toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' }),
+            severity: 'critical',
+          });
+          reply = language === 'en'
+            ? "I'm sorry to hear that. I've let your caregiver know."
+            : 'यह सुनकर दुख हुआ। मैंने आपके देखभालकर्ता को बता दिया है।';
+          toast({
+            title: t('🚨 Caregiver Alerted!', '🚨 देखभालकर्ता को सूचित किया गया!'),
+            description: reply,
+            variant: 'destructive',
+          });
+        } else if (lower.match(/\b(okay|ok|so.so|alright|theek)\b/)) {
+          await setWellbeing({ mood: 'okay', painArea: null, timestamp: new Date().toISOString() });
+          reply = language === 'en' ? "Noted, take care of yourself." : 'ठीक है, अपना ख्याल रखें।';
+        } else if (lower.match(/\b(good|great|fine|happy|wonderful|achha|acha|badhiya)\b/) || isYes) {
+          await setWellbeing({ mood: 'good', painArea: null, timestamp: new Date().toISOString() });
+          reply = language === 'en' ? 'Glad to hear that!' : 'सुनकर खुशी हुई!';
+        } else {
+          reply = language === 'en'
+            ? "I didn't catch that. Let's continue."
+            : 'मैं समझ नहीं पाया। आगे बढ़ते हैं।';
+        }
+        break;
+      }
       case 'caretaker': {
         if (isYes) {
           reply = language === 'en'
@@ -269,42 +332,65 @@ const VoiceAssistantButton = () => {
   }, [doSpeak, getMedicinesDueNow, markMedicineTaken, language, t, currentUserId, speakResponse, refreshData, askNextQuestion]);
 
   // ─── Proactive greeting: multi-turn, one question at a time ───
+  // Re-greets on every fresh app open/resume (not just once per WebView process),
+  // since sessionStorage persists as long as Android keeps the app process alive
+  // in the background — which is the common case, not just on a true cold start.
+  const lastGreetedAtRef = useRef(0);
+  const GREET_COOLDOWN_MS = 2 * 60 * 1000;
+
+  const runGreeting = useCallback(() => {
+    lastGreetedAtRef.current = Date.now();
+    const hour = new Date().getHours();
+    const greet = language === 'en'
+      ? (hour < 12 ? 'Good morning' : hour < 17 ? 'Good afternoon' : 'Good evening')
+      : (hour < 12 ? 'सुप्रभात' : hour < 17 ? 'नमस्कार' : 'शुभ संध्या');
+
+    const greeting = language === 'en'
+      ? `${greet}! I'm your Kin Care assistant. Let me check on you.`
+      : `${greet}! मैं आपका किन केयर सहायक हूँ। चलिए आपका हाल जानते हैं।`;
+
+    // Set up the question queue: medicine → meal → wellbeing → caretaker
+    convoQueueRef.current = ['medicine', 'meal', 'wellbeing', 'caretaker'];
+    convoStepRef.current = null;
+
+    setShowPanel(true);
+    setResponseText(greeting);
+    setAgentState('responding');
+
+    // Speak greeting, then start first question
+    doSpeak(greeting, () => {
+      setTimeout(() => {
+        askNextQuestion();
+      }, 600);
+    });
+  }, [doSpeak, language, askNextQuestion]);
+
+  const maybeGreet = useCallback(() => {
+    if (Date.now() - lastGreetedAtRef.current < GREET_COOLDOWN_MS) return;
+    runGreeting();
+  }, [runGreeting]);
+
+  // Greet shortly after the senior lands on their pages
   useEffect(() => {
-    if (sessionStorage.getItem('kincare_greeted') === '1') return;
     if (role !== 'senior' || loading) return;
     if (!location.pathname.startsWith('/senior')) return;
 
-    sessionStorage.setItem('kincare_greeted', '1');
-
-    const timer = setTimeout(() => {
-      const hour = new Date().getHours();
-      const greet = language === 'en'
-        ? (hour < 12 ? 'Good morning' : hour < 17 ? 'Good afternoon' : 'Good evening')
-        : (hour < 12 ? 'सुप्रभात' : hour < 17 ? 'नमस्कार' : 'शुभ संध्या');
-
-      const greeting = language === 'en'
-        ? `${greet}! I'm your Kin Care assistant. Let me check on you.`
-        : `${greet}! मैं आपका किन केयर सहायक हूँ। चलिए आपका हाल जानते हैं।`;
-
-      // Set up the question queue: medicine → meal → caretaker
-      convoQueueRef.current = ['medicine', 'meal', 'caretaker'];
-      convoStepRef.current = null;
-
-      setShowPanel(true);
-      setResponseText(greeting);
-      setAgentState('responding');
-
-      // Speak greeting, then start first question
-      doSpeak(greeting, () => {
-        setTimeout(() => {
-          askNextQuestion();
-        }, 600);
-      });
-    }, 1500);
-
+    const timer = setTimeout(() => { maybeGreet(); }, 1500);
     return () => clearTimeout(timer);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [role, loading, location.pathname, doSpeak, language]);
+  }, [role, loading, location.pathname, maybeGreet]);
+
+  // Re-greet whenever the app is reopened/resumed from the background
+  useEffect(() => {
+    if (role !== 'senior' || loading) return;
+
+    const handleVisibility = () => {
+      if (document.visibilityState === 'visible') {
+        maybeGreet();
+      }
+    };
+    document.addEventListener('visibilitychange', handleVisibility);
+    return () => document.removeEventListener('visibilitychange', handleVisibility);
+  }, [role, loading, maybeGreet]);
 
   // ─── Medicine reminder notifications: escalating schedule per medicine ───
   // Schedule: T-15 (gentle) → T+0 (time now!) → T+10 (still pending) → T+20 (urgent) → T+30 (caregiver alert)
@@ -314,6 +400,11 @@ const VoiceAssistantButton = () => {
     // Clear old notification timeouts
     notifTimeoutsRef.current.forEach(clearTimeout);
     notifTimeoutsRef.current = [];
+
+    // Cancel previously scheduled OS notifications — they'll be rescheduled below
+    // from scratch, so any medicine marked taken since the last run stays cancelled.
+    cancelReminderNotifications(osNotifIdsRef.current);
+    osNotifIdsRef.current = [];
 
     const now = new Date();
     const nowMinutes = now.getHours() * 60 + now.getMinutes();
@@ -331,6 +422,16 @@ const VoiceAssistantButton = () => {
       notifTimeoutsRef.current.push(id);
     };
 
+    // Helper: schedule the same reminder as a real OS notification, so it still
+    // arrives when the app is backgrounded or closed (setTimeout above only fires
+    // while the app is running in the foreground).
+    const scheduleOsReminder = (delayMs: number, tier: number, medId: string, slot: string, title: string, body: string) => {
+      if (delayMs < 0) return;
+      const id = hashToNotificationId(`${medId}|${slot}|${tier}`);
+      osNotifIdsRef.current.push(id);
+      scheduleReminderNotification({ id, title, body, at: new Date(Date.now() + delayMs) });
+    };
+
     sharedMedicines.forEach(med => {
       if (med.taken) return;
       const slots = med.timing.split(',').map(s => s.trim());
@@ -346,31 +447,36 @@ const VoiceAssistantButton = () => {
         // ── Reminder 1: T-15 min — Gentle heads-up ──
         const r1Offset = slotMinutes - 15;
         if (r1Offset > nowMinutes) {
-          scheduleReminder((r1Offset - nowMinutes) * 60000, () => {
+          const r1Delay = (r1Offset - nowMinutes) * 60000;
+          const r1Title = t('Upcoming Medicine', 'आने वाली दवाई');
+          const r1Msg = language === 'en'
+            ? `Heads up: You need to take ${medName} at ${slot}. That's in 15 minutes.`
+            : `ध्यान दें: ${medName} ${slot} बजे लेनी है। 15 मिनट बाकी हैं।`;
+          scheduleReminder(r1Delay, () => {
             if (!isStillPending(med.id)) return;
-            const msg = language === 'en'
-              ? `Heads up: You need to take ${medName} at ${slot}. That's in 15 minutes.`
-              : `ध्यान दें: ${medName} ${slot} बजे लेनी है। 15 मिनट बाकी हैं।`;
             setShowPanel(true);
-            setResponseText(msg);
+            setResponseText(r1Msg);
             setAgentState('responding');
-            doSpeak(msg);
-            toast({ title: t('Upcoming Medicine', 'आने वाली दवाई'), description: msg });
+            doSpeak(r1Msg);
+            toast({ title: r1Title, description: r1Msg });
           });
+          scheduleOsReminder(r1Delay, 1, med.id, slot, r1Title, r1Msg);
         }
 
         // ── Reminder 2: T+0 — Exact time, asks for response ──
         if (slotMinutes > nowMinutes) {
-          scheduleReminder((slotMinutes - nowMinutes) * 60000, () => {
+          const r2Delay = (slotMinutes - nowMinutes) * 60000;
+          const r2Title = t('Medicine Time!', 'दवाई का समय!');
+          const r2Msg = language === 'en'
+            ? `It's ${slot} now. Time to take ${medName}! Did you take it?`
+            : `अभी ${slot} बज गए हैं। ${medName} लेने का समय! क्या आपने ली?`;
+          scheduleReminder(r2Delay, () => {
             if (!isStillPending(med.id)) return;
-            const msg = language === 'en'
-              ? `It's ${slot} now. Time to take ${medName}! Did you take it?`
-              : `अभी ${slot} बज गए हैं। ${medName} लेने का समय! क्या आपने ली?`;
             setShowPanel(true);
-            setResponseText(msg);
+            setResponseText(r2Msg);
             setAgentState('responding');
-            doSpeak(msg, () => { startListening(); });
-            toast({ title: t('Medicine Time!', 'दवाई का समय!'), description: msg, variant: 'destructive' });
+            doSpeak(r2Msg, () => { startListening(); });
+            toast({ title: r2Title, description: r2Msg, variant: 'destructive' });
 
             // If no reply within 2 minutes → warn caregiver
             scheduleReminder(2 * 60000, async () => {
@@ -384,21 +490,24 @@ const VoiceAssistantButton = () => {
               });
             });
           });
+          scheduleOsReminder(r2Delay, 2, med.id, slot, r2Title, r2Msg);
         }
 
         // ── Reminder 3: T+10 min — "You still haven't taken it" ──
         const r3Offset = slotMinutes + 10;
         if (r3Offset > nowMinutes) {
-          scheduleReminder((r3Offset - nowMinutes) * 60000, () => {
+          const r3Delay = (r3Offset - nowMinutes) * 60000;
+          const r3Title = t('Medicine Overdue', 'दवाई लेना बाकी');
+          const r3Msg = language === 'en'
+            ? `You still haven't taken ${medName}. It was due at ${slot}. Please take it now.`
+            : `आपने अभी तक ${medName} नहीं ली। ${slot} बजे लेनी थी। कृपया अभी लें।`;
+          scheduleReminder(r3Delay, () => {
             if (!isStillPending(med.id)) return;
-            const msg = language === 'en'
-              ? `You still haven't taken ${medName}. It was due at ${slot}. Please take it now.`
-              : `आपने अभी तक ${medName} नहीं ली। ${slot} बजे लेनी थी। कृपया अभी लें।`;
             setShowPanel(true);
-            setResponseText(msg);
+            setResponseText(r3Msg);
             setAgentState('responding');
-            doSpeak(msg, () => { startListening(); });
-            toast({ title: t('Medicine Overdue', 'दवाई लेना बाकी'), description: msg });
+            doSpeak(r3Msg, () => { startListening(); });
+            toast({ title: r3Title, description: r3Msg });
 
             // If no reply within 2 minutes → warn caregiver again
             scheduleReminder(2 * 60000, async () => {
@@ -412,21 +521,24 @@ const VoiceAssistantButton = () => {
               });
             });
           });
+          scheduleOsReminder(r3Delay, 3, med.id, slot, r3Title, r3Msg);
         }
 
         // ── Reminder 4: T+20 min — Urgent warning ──
         const r4Offset = slotMinutes + 20;
         if (r4Offset > nowMinutes) {
-          scheduleReminder((r4Offset - nowMinutes) * 60000, async () => {
+          const r4Delay = (r4Offset - nowMinutes) * 60000;
+          const r4Title = t('Urgent Reminder!', 'ज़रूरी याद!');
+          const r4Msg = language === 'en'
+            ? `Urgent: ${medName} is 20 minutes overdue! Please take it right now.`
+            : `ज़रूरी: ${medName} 20 मिनट से बाकी है! कृपया अभी लें।`;
+          scheduleReminder(r4Delay, async () => {
             if (!isStillPending(med.id)) return;
-            const msg = language === 'en'
-              ? `Urgent: ${medName} is 20 minutes overdue! Please take it right now.`
-              : `ज़रूरी: ${medName} 20 मिनट से बाकी है! कृपया अभी लें।`;
             setShowPanel(true);
-            setResponseText(msg);
+            setResponseText(r4Msg);
             setAgentState('responding');
-            doSpeak(msg, () => { startListening(); });
-            toast({ title: t('Urgent Reminder!', 'ज़रूरी याद!'), description: msg, variant: 'destructive' });
+            doSpeak(r4Msg, () => { startListening(); });
+            toast({ title: r4Title, description: r4Msg, variant: 'destructive' });
 
             // Send escalated alert to caregiver
             await addAlert({
@@ -437,21 +549,24 @@ const VoiceAssistantButton = () => {
               severity: 'critical',
             });
           });
+          scheduleOsReminder(r4Delay, 4, med.id, slot, r4Title, r4Msg);
         }
 
         // ── Reminder 5: T+30 min — Alert caregiver ──
         const r5Offset = slotMinutes + 30;
         if (r5Offset > nowMinutes) {
-          scheduleReminder((r5Offset - nowMinutes) * 60000, async () => {
+          const r5Delay = (r5Offset - nowMinutes) * 60000;
+          const r5Title = t('Caregiver Notified', 'देखभालकर्ता को सूचित किया');
+          const r5Msg = language === 'en'
+            ? `${medName} has not been taken for 30 minutes. Your caregiver has been notified.`
+            : `${medName} 30 मिनट से नहीं ली गई। आपके देखभालकर्ता को सूचित कर दिया गया है।`;
+          scheduleReminder(r5Delay, async () => {
             if (!isStillPending(med.id)) return;
-            const msg = language === 'en'
-              ? `${medName} has not been taken for 30 minutes. Your caregiver has been notified.`
-              : `${medName} 30 मिनट से नहीं ली गई। आपके देखभालकर्ता को सूचित कर दिया गया है।`;
             setShowPanel(true);
-            setResponseText(msg);
+            setResponseText(r5Msg);
             setAgentState('responding');
-            doSpeak(msg);
-            toast({ title: t('Caregiver Notified', 'देखभालकर्ता को सूचित किया'), description: msg, variant: 'destructive' });
+            doSpeak(r5Msg);
+            toast({ title: r5Title, description: r5Msg, variant: 'destructive' });
 
             // Send critical alert to caregiver
             await addAlert({
@@ -462,6 +577,7 @@ const VoiceAssistantButton = () => {
               severity: 'critical',
             });
           });
+          scheduleOsReminder(r5Delay, 5, med.id, slot, r5Title, r5Msg);
         }
       });
     });
@@ -540,13 +656,15 @@ const VoiceAssistantButton = () => {
         else if (freq.includes('morning')) timing = '08:00';
 
         const newMedicine = {
-          id: crypto.randomUUID(),
-          name: `${name} ${dosage || ''}`.trim(),
-          nameHi: `${name} ${dosage || ''}`.trim(),
-          dosage: dosage || 'As directed',
-          frequency: frequency || 'once daily',
-          timing,
-          beforeAfterFood: (beforeAfterFood as 'before' | 'after' | 'with' | 'any') || 'any',
+          ...withScheduleDefaults({
+            name: `${name} ${dosage || ''}`.trim(),
+            nameHi: `${name} ${dosage || ''}`.trim(),
+            dosage: dosage || 'As directed',
+            frequency: frequency || 'once daily',
+            timing,
+            beforeAfterFood: (beforeAfterFood as 'before' | 'after' | 'with' | 'any') || 'any',
+            confidence: 100,
+          }, crypto.randomUUID()),
           taken: false,
         };
 
