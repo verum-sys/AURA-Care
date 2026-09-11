@@ -5,15 +5,30 @@ import SeniorLayout from '@/components/SeniorLayout';
 import PushOptInBanner from '@/components/PushOptInBanner';
 import { useApp } from '@/context/AppContext';
 import { toast } from '@/hooks/use-toast';
+import * as db from '@/lib/database';
+
+const MOOD_DISPLAY: Record<string, [string, string, string]> = {
+  good: ['😊', 'Feeling good', 'अच्छा महसूस कर रहे हैं'],
+  okay: ['🙂', 'Feeling okay', 'ठीक महसूस कर रहे हैं'],
+  not_well: ['😟', 'Not feeling well', 'अच्छा महसूस नहीं कर रहे'],
+};
+
+const MEAL_LABEL: Record<string, [string, string]> = {
+  breakfast: ['Breakfast', 'नाश्ता'],
+  lunch: ['Lunch', 'दोपहर का खाना'],
+  dinner: ['Dinner', 'रात का खाना'],
+  snack: ['Snack', 'नाश्ता'],
+};
 
 const Welcome = () => {
   const navigate = useNavigate();
-  const { t, linkedCaregiver, linkWithCode, addAlert, sharedMedicines, wellbeing, currentUserName, refreshData } = useApp();
+  const { t, linkedCaregiver, linkWithCode, addAlert, sharedMedicines, wellbeing, currentUserName, currentUserId, refreshData } = useApp();
   const [showCodeInput, setShowCodeInput] = useState(false);
   const [codeInput, setCodeInput] = useState('');
   const [codeError, setCodeError] = useState('');
   const [submitting, setSubmitting] = useState(false);
   const [sosPressed, setSosPressed] = useState(false);
+  const [todayMeals, setTodayMeals] = useState<db.DBMealLog[]>([]);
 
   // This is the senior's main hub — refresh whenever it's visited so
   // anything the caregiver just changed (new medicines, routine, etc.)
@@ -22,6 +37,17 @@ const Welcome = () => {
     refreshData();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  // For the "Did You Eat?" tile's subtitle — shows the most recent actual
+  // answer (e.g. "Lunch: Eaten") instead of a static prompt.
+  useEffect(() => {
+    if (!currentUserId) return;
+    db.getTodayMealLogs(currentUserId).then(setTodayMeals).catch(() => {});
+  }, [currentUserId]);
+
+  const latestMeal = todayMeals.length > 0
+    ? [...todayMeals].sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime())[0]
+    : null;
 
   const handleSOS = async () => {
     if (sosPressed) return; // prevent double-tap
@@ -180,8 +206,8 @@ const Welcome = () => {
           <div className="flex-1 text-left">
             <p className="font-bold text-foreground">{t('How Are You Feeling?', 'आप कैसा महसूस कर रहे हैं?')}</p>
             <p className="text-xs text-muted-foreground font-semibold">
-              {wellbeingDoneToday
-                ? t('Checked in today', 'आज दर्ज किया')
+              {wellbeingDoneToday && wellbeing?.mood
+                ? `${MOOD_DISPLAY[wellbeing.mood][0]} ${t(MOOD_DISPLAY[wellbeing.mood][1], MOOD_DISPLAY[wellbeing.mood][2])}`
                 : t('Tap to check in', 'दर्ज करने के लिए टैप करें')
               }
             </p>
@@ -200,7 +226,14 @@ const Welcome = () => {
           </div>
           <div className="flex-1 text-left">
             <p className="font-bold text-foreground">{t('Did You Eat?', 'क्या आपने खाना खाया?')}</p>
-            <p className="text-xs text-muted-foreground font-semibold">{t('Log your meals', 'अपना भोजन दर्ज करें')}</p>
+            <p className="text-xs text-muted-foreground font-semibold">
+              {latestMeal
+                ? `${t(MEAL_LABEL[latestMeal.meal_type]?.[0] ?? latestMeal.meal_type, MEAL_LABEL[latestMeal.meal_type]?.[1] ?? latestMeal.meal_type)}: ${
+                    latestMeal.eaten ? t('Eaten ✓', 'खाया ✓') : t('Not yet', 'अभी नहीं')
+                  }`
+                : t('Log your meals', 'अपना भोजन दर्ज करें')
+              }
+            </p>
           </div>
         </button>
       </div>
