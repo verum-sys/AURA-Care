@@ -1,6 +1,6 @@
 -- ============================================================
--- Migration 0010: per-dose medicine tracking + activate the
--- reminder cron job.
+-- Migration 0010: per-dose medicine tracking + a dynamic,
+-- pending-items-aware reminder cron job.
 --
 -- ADDITIVE ONLY — safe to run against the live database.
 --
@@ -9,7 +9,15 @@
 --    separate doses instead of one "taken today" flag. Existing rows
 --    get slot = '' and keep working exactly as before — nothing that
 --    already reads/writes medicine_logs without a slot breaks.
--- 2. Actually schedules supabase/functions/send-reminders, which was
+-- 2. reminder_send_log's old one-per-window-per-day uniqueness no longer
+--    fits — the new send-reminders computes "everything still pending"
+--    on every tick rather than one fixed anchor at a time — so it's
+--    relaxed into a plain append-only send history instead.
+-- 3. New reminder_state table: one row per senior, tracking what was in
+--    the last push sent and when, so send-reminders can decide "send
+--    again" (something new became due, or 2h have passed) vs "already
+--    covered this."
+-- 4. Actually schedules supabase/functions/send-reminders, which was
 --    deployed but never called — reminder_send_log had zero rows.
 -- ============================================================
 
@@ -41,6 +49,24 @@ END $$;
 
 ALTER TABLE medicine_logs ADD CONSTRAINT medicine_logs_medicine_id_taken_date_slot_key
   UNIQUE (medicine_id, taken_date, slot);
+
+-- reminder_send_log becomes a plain history log (still useful for
+-- debugging "did a push actually fire") — drop the constraint that limited
+-- it to one row per window per day, since a single tick can now legitimately
+-- log one row summarizing everything it sent, and re-sends every ~2h.
+ALTER TABLE reminder_send_log DROP CONSTRAINT IF EXISTS reminder_send_log_senior_id_window_key_send_date_key;
+ALTER TABLE reminder_send_log ALTER COLUMN window_key DROP NOT NULL;
+ALTER TABLE reminder_send_log DROP CONSTRAINT IF EXISTS reminder_send_log_window_key_check;
+
+CREATE TABLE IF NOT EXISTS reminder_state (
+  senior_id       TEXT PRIMARY KEY REFERENCES users(clerk_id) ON DELETE CASCADE,
+  last_sent_at    TIMESTAMPTZ,
+  last_signature  TEXT NOT NULL DEFAULT ''
+);
+
+ALTER TABLE reminder_state ENABLE ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS "reminder_state_all" ON reminder_state;
+CREATE POLICY "reminder_state_all" ON reminder_state FOR ALL USING (true) WITH CHECK (true);
 
 CREATE EXTENSION IF NOT EXISTS pg_cron;
 CREATE EXTENSION IF NOT EXISTS pg_net;

@@ -76,6 +76,16 @@ const DailyCheckIn = () => {
   const [step, setStep] = useState<Step>('loading');
   const [queue, setQueue] = useState<QueueItem[]>([]);
   const [queueIndex, setQueueIndex] = useState(0);
+  const [stuck, setStuck] = useState(false);
+
+  // Belt-and-suspenders on top of the try/catch below: if the queue build
+  // hasn't finished in 8s for any reason at all, offer a way out instead of
+  // trusting every possible failure mode to have been anticipated.
+  useEffect(() => {
+    if (step !== 'loading') { setStuck(false); return; }
+    const timeout = setTimeout(() => setStuck(true), 8000);
+    return () => clearTimeout(timeout);
+  }, [step]);
 
   const answeredMoodToday = useMemo(() => {
     if (!wellbeing?.timestamp) return false;
@@ -91,20 +101,40 @@ const DailyCheckIn = () => {
     let cancelled = false;
 
     (async () => {
-      const [mealLogs, slotLogs] = await Promise.all([
-        db.getTodayMealLogs(seniorId),
-        db.getTodayMedicineSlotLogs(seniorId),
-      ]);
+    try {
+      // getTodayMedicineSlotLogs needs migration 0010 (medicine_logs.slot).
+      // If it hasn't been applied yet, fall back to the day-level "taken"
+      // flag rather than leaving a senior stuck on a spinner forever —
+      // degraded (can't tell 1pm apart from 5pm) but never broken.
+      let mealLogs: db.DBMealLog[] = [];
+      let loggedSlots = new Set<string>();
+      let dayLevelTakenIds = new Set<string>();
+      try {
+        const [mLogs, slotLogs] = await Promise.all([
+          db.getTodayMealLogs(seniorId),
+          db.getTodayMedicineSlotLogs(seniorId),
+        ]);
+        mealLogs = mLogs;
+        loggedSlots = new Set(slotLogs.map(l => `${l.medicine_id}|${l.slot}`));
+      } catch (err) {
+        console.error('Slot-aware fetch failed, falling back to day-level medicine status:', err);
+        try {
+          mealLogs = await db.getTodayMealLogs(seniorId);
+        } catch (err2) {
+          console.error('Meal log fetch also failed:', err2);
+        }
+        dayLevelTakenIds = new Set(sharedMedicines.filter(m => m.taken).map(m => m.id));
+      }
       if (cancelled) return;
 
       const now = new Date();
       const nowMinutes = now.getHours() * 60 + now.getMinutes();
       const loggedMeals = new Set(mealLogs.map(l => l.meal_type));
-      const loggedSlots = new Set(slotLogs.map(l => `${l.medicine_id}|${l.slot}`));
 
       const items: QueueItem[] = [];
 
       for (const med of sharedMedicines) {
+        if (dayLevelTakenIds.has(med.id)) continue; // fallback mode: whole day already answered
         const slots = med.timing.split(',').map(s => s.trim()).filter(Boolean);
         for (const slot of slots) {
           const minutes = timeStrToMinutes(slot);
@@ -138,6 +168,12 @@ const DailyCheckIn = () => {
       setQueue(items);
       setQueueIndex(0);
       setStep(!answeredMoodToday ? 'mood' : items.length > 0 ? 'item' : 'done');
+    } catch (err) {
+      // Whatever went wrong, never leave a senior stuck on a spinner —
+      // land on the dashboard-reachable "done" screen instead.
+      console.error('DailyCheckIn: failed to build queue', err);
+      if (!cancelled) setStep('done');
+    }
       // eslint-disable-next-line react-hooks/exhaustive-deps
     })();
 
@@ -234,8 +270,16 @@ const DailyCheckIn = () => {
   return (
     <SeniorLayout title={t('Daily Check-In', 'दैनिक जाँच')}>
       {step === 'loading' && (
-        <div className="min-h-[50vh] flex items-center justify-center">
+        <div className="min-h-[50vh] flex flex-col items-center justify-center gap-4">
           <span className="text-4xl animate-pulse">⏳</span>
+          {stuck && (
+            <button
+              onClick={() => navigate('/senior', { replace: true })}
+              className="text-sm font-bold text-primary underline underline-offset-2"
+            >
+              {t('Skip for now → Dashboard', 'अभी छोड़ें → डैशबोर्ड')}
+            </button>
+          )}
         </div>
       )}
 
@@ -335,6 +379,15 @@ const DailyCheckIn = () => {
             {t('Go to My Dashboard', 'मेरे डैशबोर्ड पर जाएं')}
           </button>
         </div>
+      )}
+
+      {step !== 'loading' && step !== 'done' && (
+        <button
+          onClick={() => navigate('/senior', { replace: true })}
+          className="w-full text-center text-sm font-bold text-muted-foreground underline underline-offset-2 mt-6 py-2"
+        >
+          {t('Skip for now', 'अभी छोड़ें')}
+        </button>
       )}
     </SeniorLayout>
   );
