@@ -1,5 +1,4 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
-import { useLocation, useNavigate } from 'react-router-dom';
 import { Mic, MicOff, X, Loader2, Volume2 } from 'lucide-react';
 import { useApp } from '@/context/AppContext';
 import { toast } from '@/hooks/use-toast';
@@ -8,24 +7,30 @@ import { useSpeechRecognition } from '@/hooks/useSpeechRecognition';
 import { processVoiceCommand, AgentAction } from '@/lib/voiceAgent';
 import { Capacitor } from '@capacitor/core';
 import { TextToSpeech } from '@capacitor-community/text-to-speech';
-import { initNotifications, hashToNotificationId, scheduleReminderNotification, cancelReminderNotifications } from '@/lib/notifications';
 import { withScheduleDefaults } from '@/lib/medicineSchedule';
 
 type AgentState = 'idle' | 'listening' | 'processing' | 'responding' | 'error';
 
-// Conversation question types for multi-turn flow
-type ConvoStep = 'medicine' | 'meal' | 'wellbeing' | 'caretaker' | null;
-
+// On-demand voice/type command assistant — tap the mic (or type/tap a hint)
+// any time to add a medicine, log a meal, mark something taken, or ask
+// what's pending. Deliberately does NOT proactively interrupt on its own:
+// that job now belongs to (1) DailyCheckIn.tsx, shown on app open and
+// reachable any time, which reads the same live DB state this assistant
+// writes to, and (2) push notifications (send-reminders edge function),
+// which work even when the app is closed — unlike a foreground-only
+// setTimeout-based nag ever could. This used to also run its own proactive
+// greeting and a 5-tier escalating per-medicine reminder schedule; removed
+// because it duplicated (worse — foreground-only, and asked things already
+// answered) both of those, and because generate_alerts() (migration 0007,
+// pg_cron) already covers "senior hasn't taken a medicine" server-side
+// regardless of whether the app is even open.
 const VoiceAssistantButton = () => {
   const {
-    t, language, role, loading, currentUserId,
+    t, language, role, currentUserId,
     sharedMedicines, setSharedMedicines, markMedicineTaken,
     wellbeing, setWellbeing, addAlert,
     refreshData,
   } = useApp();
-
-  const location = useLocation();
-  const navigate = useNavigate();
 
   const [agentState, setAgentState] = useState<AgentState>('idle');
   const [showPanel, setShowPanel] = useState(false);
@@ -33,40 +38,14 @@ const VoiceAssistantButton = () => {
   const [, setLastAction] = useState<AgentAction | null>(null);
   const [manualInput, setManualInput] = useState('');
 
-  // Multi-turn conversation state
-  const convoStepRef = useRef<ConvoStep>(null);
-  const convoQueueRef = useRef<ConvoStep[]>([]);
-
-  // True whenever the panel was opened proactively (greeting or a scheduled
-  // medicine reminder) rather than by the senior tapping the mic themselves
-  // — closing a proactive prompt should return them to the dashboard instead
-  // of just hiding the panel over whatever page they happened to be on.
-  const isProactiveRef = useRef(false);
-
-  // Always-fresh ref so reminder timeouts read current medicine state, not stale closure
+  // Always-fresh ref so reminder timeouts (from an explicit "remind me
+  // later" command) read current medicine state, not a stale closure.
   const sharedMedicinesRef = useRef(sharedMedicines);
   useEffect(() => { sharedMedicinesRef.current = sharedMedicines; }, [sharedMedicines]);
 
-  // Track active reminder timeouts so we can cancel them on unmount
+  // Track active snooze timeouts so they're cancelled on unmount.
   const reminderTimeoutsRef = useRef<ReturnType<typeof setTimeout>[]>([]);
   useEffect(() => () => { reminderTimeoutsRef.current.forEach(clearTimeout); }, []);
-
-  // Track notification timeouts for medicine reminders
-  const notifTimeoutsRef = useRef<ReturnType<typeof setTimeout>[]>([]);
-  useEffect(() => () => { notifTimeoutsRef.current.forEach(clearTimeout); }, []);
-
-  // Track scheduled OS-level notification ids so they can be cancelled/rescheduled
-  const osNotifIdsRef = useRef<number[]>([]);
-  useEffect(() => () => { cancelReminderNotifications(osNotifIdsRef.current); }, []);
-
-  // Request notification permission (and create the Android channel) once on start —
-  // without this the OS "Notifications" toggle for the app has nothing to control.
-  const notifInitRef = useRef(false);
-  useEffect(() => {
-    if (loading || notifInitRef.current) return;
-    notifInitRef.current = true;
-    initNotifications();
-  }, [loading]);
 
   // ─── Robust speak helper: native TTS on mobile, Web Speech API on browser ───
   const doSpeak = useCallback((text: string, onEnd?: () => void) => {
@@ -135,474 +114,6 @@ const VoiceAssistantButton = () => {
     });
   }, []);
 
-  // ─── Multi-turn: ask the next question in the queue ───
-  const askNextQuestion = useCallback(() => {
-    const queue = convoQueueRef.current;
-    if (queue.length === 0) {
-      convoStepRef.current = null;
-      return;
-    }
-
-    const next = queue.shift()!;
-    convoStepRef.current = next;
-
-    let question = '';
-    const hour = new Date().getHours();
-
-    switch (next) {
-      case 'medicine': {
-        const dueMeds = getMedicinesDueNow();
-        if (dueMeds.length === 0) {
-          // No medicines due — skip to next question
-          askNextQuestion();
-          return;
-        }
-        const names = dueMeds.map(m => language === 'hi' ? (m.nameHi || m.name) : m.name).join(', ');
-        question = language === 'en'
-          ? `You have ${dueMeds.length} medicine${dueMeds.length > 1 ? 's' : ''} due: ${names}. Did you take ${dueMeds.length > 1 ? 'them' : 'it'}?`
-          : `आपकी ${dueMeds.length} दवाई का समय हो चुका है: ${names}। क्या आपने ${dueMeds.length > 1 ? 'ये' : 'यह'} ली?`;
-        break;
-      }
-      case 'meal': {
-        const mealEn = hour >= 15 ? 'lunch' : 'breakfast';
-        const mealHi = hour >= 15 ? 'दोपहर का खाना' : 'नाश्ता';
-        question = language === 'en'
-          ? `Have you had your ${mealEn}?`
-          : `क्या आपने ${mealHi} खाया?`;
-        break;
-      }
-      case 'wellbeing':
-        question = language === 'en'
-          ? 'How are you feeling today? Good, okay, or not well?'
-          : 'आज आप कैसा महसूस कर रहे हैं? अच्छा, ठीक, या अच्छा नहीं?';
-        break;
-      case 'caretaker':
-        question = language === 'en'
-          ? 'Would you like to call your caretaker?'
-          : 'क्या आप अपने देखभालकर्ता को कॉल करना चाहेंगे?';
-        break;
-    }
-
-    setResponseText(question);
-    setAgentState('responding');
-    doSpeak(question, () => {
-      startListening();
-    });
-  }, [doSpeak, language, getMedicinesDueNow]);
-
-  // ─── Handle answer to a multi-turn question ───
-  const handleConvoAnswer = useCallback(async (transcript: string) => {
-    const step = convoStepRef.current;
-    const lower = transcript.toLowerCase();
-    const isYes = /\b(yes|yeah|haan|ha|ji|ho gaya|kar liya|kha li|le li|taken|done|finished)\b/i.test(lower);
-    const isNo = /\b(no|nahi|nah|not yet|abhi nahi|baad mein)\b/i.test(lower);
-
-    let reply = '';
-
-    switch (step) {
-      case 'medicine': {
-        if (isYes) {
-          // Mark only medicines that are DUE NOW as taken
-          const dueMeds = getMedicinesDueNow();
-          for (const med of dueMeds) {
-            await markMedicineTaken(med.id);
-          }
-          const names = dueMeds.map(m => language === 'hi' ? (m.nameHi || m.name) : m.name).join(', ');
-          reply = language === 'en'
-            ? `Great! I've marked ${names} as taken.`
-            : `बहुत अच्छा! ${names} को ली गई के रूप में अंकित कर दिया।`;
-          toast({
-            title: t('Medicines Taken', 'दवाइयाँ ली गईं'),
-            description: reply,
-          });
-        } else if (isNo) {
-          reply = language === 'en'
-            ? "Okay, I'll remind you in 30 minutes."
-            : "ठीक है, 30 मिनट बाद याद दिलाऊँगा।";
-          // Set snooze reminder for due medicines
-          const dueMeds = getMedicinesDueNow();
-          const medNames = dueMeds.map(m => m.name).join(', ');
-          const REMIND_MS = 30 * 60 * 1000;
-          const t1 = setTimeout(() => {
-            const stillPending = sharedMedicinesRef.current.filter(m =>
-              dueMeds.some(d => d.id === m.id) && !m.taken
-            );
-            if (stillPending.length === 0) return;
-            const reminderMsg = t(
-              `Reminder: Time to take ${medNames}!`,
-              `याद दिलाना: ${medNames} लेने का समय!`
-            );
-            speakResponse(reminderMsg);
-            toast({ title: t('Medicine Reminder', 'दवाई की याद'), description: reminderMsg });
-          }, REMIND_MS);
-          reminderTimeoutsRef.current.push(t1);
-        } else {
-          reply = language === 'en'
-            ? "I didn't catch that. Let's move on."
-            : "मैं समझ नहीं पाया। आगे बढ़ते हैं।";
-        }
-        break;
-      }
-      case 'meal': {
-        const hour = new Date().getHours();
-        const mealType = hour >= 15 ? 'lunch' : 'breakfast';
-        if (isYes) {
-          if (currentUserId) {
-            await db.logMeal(currentUserId, mealType as 'breakfast' | 'lunch', true);
-          }
-          reply = language === 'en'
-            ? `Good, I've logged your ${mealType}.`
-            : `अच्छा, आपका ${mealType === 'lunch' ? 'दोपहर का खाना' : 'नाश्ता'} दर्ज कर दिया।`;
-          toast({
-            title: t('Meal Logged', 'भोजन दर्ज'),
-            description: reply,
-          });
-        } else if (isNo) {
-          reply = language === 'en'
-            ? "Please try to eat soon. It's important for your health."
-            : "कृपया जल्दी खाना खाएं। यह आपकी सेहत के लिए ज़रूरी है।";
-        } else {
-          reply = language === 'en'
-            ? "I didn't catch that. Let's continue."
-            : "मैं समझ नहीं पाया। आगे बढ़ते हैं।";
-        }
-        break;
-      }
-      case 'wellbeing': {
-        const painAreas: Record<string, string> = {
-          head: 'head', sir: 'head', headache: 'head',
-          chest: 'chest', seena: 'chest',
-          stomach: 'stomach', pet: 'stomach', tummy: 'stomach',
-          back: 'back', kamar: 'back',
-          leg: 'legs', legs: 'legs', pair: 'legs', knee: 'legs',
-        };
-        let painArea: string | null = null;
-        for (const [keyword, area] of Object.entries(painAreas)) {
-          if (lower.includes(keyword)) { painArea = area; break; }
-        }
-
-        if (lower.match(/(not\s+well|not\s+good|sick|unwell|bad|pain|hurt|ache|दर्द)/)) {
-          await setWellbeing({ mood: 'not_well', painArea, timestamp: new Date().toISOString() });
-          await addAlert({
-            type: 'distress',
-            message: `Reported feeling unwell during check-in${painArea ? ` – ${painArea} area` : ''}.`,
-            messageHi: `जांच के दौरान अस्वस्थ महसूस किया${painArea ? ` – ${painArea} क्षेत्र` : ''}।`,
-            time: new Date().toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' }),
-            severity: 'critical',
-          });
-          reply = language === 'en'
-            ? "I'm sorry to hear that. I've let your caregiver know."
-            : 'यह सुनकर दुख हुआ। मैंने आपके देखभालकर्ता को बता दिया है।';
-          toast({
-            title: t('🚨 Caregiver Alerted!', '🚨 देखभालकर्ता को सूचित किया गया!'),
-            description: reply,
-            variant: 'destructive',
-          });
-        } else if (lower.match(/\b(okay|ok|so.so|alright|theek)\b/)) {
-          await setWellbeing({ mood: 'okay', painArea: null, timestamp: new Date().toISOString() });
-          reply = language === 'en' ? "Noted, take care of yourself." : 'ठीक है, अपना ख्याल रखें।';
-        } else if (lower.match(/\b(good|great|fine|happy|wonderful|achha|acha|badhiya)\b/) || isYes) {
-          await setWellbeing({ mood: 'good', painArea: null, timestamp: new Date().toISOString() });
-          reply = language === 'en' ? 'Glad to hear that!' : 'सुनकर खुशी हुई!';
-        } else {
-          reply = language === 'en'
-            ? "I didn't catch that. Let's continue."
-            : 'मैं समझ नहीं पाया। आगे बढ़ते हैं।';
-        }
-        break;
-      }
-      case 'caretaker': {
-        if (isYes) {
-          reply = language === 'en'
-            ? "I'll connect you to your caretaker. This feature is coming soon."
-            : "मैं आपको आपके देखभालकर्ता से जोड़ता हूँ। यह सुविधा जल्द आ रही है।";
-        } else {
-          reply = language === 'en'
-            ? "Alright! Have a wonderful day. Take care!"
-            : "ठीक है! आपका दिन शुभ हो। अपना ख्याल रखें!";
-        }
-        break;
-      }
-    }
-
-    setResponseText(reply);
-    setAgentState('responding');
-
-    // Speak reply, then move to next question
-    doSpeak(reply, () => {
-      // Small delay before next question
-      setTimeout(() => {
-        askNextQuestion();
-      }, 800);
-    });
-
-    await refreshData();
-  }, [doSpeak, getMedicinesDueNow, markMedicineTaken, language, t, currentUserId, speakResponse, refreshData, askNextQuestion]);
-
-  // ─── Proactive greeting: multi-turn, one question at a time ───
-  // Re-greets on every fresh app open/resume (not just once per WebView process),
-  // since sessionStorage persists as long as Android keeps the app process alive
-  // in the background — which is the common case, not just on a true cold start.
-  const lastGreetedAtRef = useRef(0);
-  const GREET_COOLDOWN_MS = 2 * 60 * 1000;
-
-  const runGreeting = useCallback(() => {
-    lastGreetedAtRef.current = Date.now();
-    isProactiveRef.current = true;
-    const hour = new Date().getHours();
-    const greet = language === 'en'
-      ? (hour < 12 ? 'Good morning' : hour < 17 ? 'Good afternoon' : 'Good evening')
-      : (hour < 12 ? 'सुप्रभात' : hour < 17 ? 'नमस्कार' : 'शुभ संध्या');
-
-    const greeting = language === 'en'
-      ? `${greet}! I'm your Kin Care assistant. Let me check on you.`
-      : `${greet}! मैं आपका किन केयर सहायक हूँ। चलिए आपका हाल जानते हैं।`;
-
-    // Set up the question queue: medicine → meal → wellbeing → caretaker
-    convoQueueRef.current = ['medicine', 'meal', 'wellbeing', 'caretaker'];
-    convoStepRef.current = null;
-
-    setShowPanel(true);
-    setResponseText(greeting);
-    setAgentState('responding');
-
-    // Speak greeting, then start first question
-    doSpeak(greeting, () => {
-      setTimeout(() => {
-        askNextQuestion();
-      }, 600);
-    });
-  }, [doSpeak, language, askNextQuestion]);
-
-  const maybeGreet = useCallback(() => {
-    if (Date.now() - lastGreetedAtRef.current < GREET_COOLDOWN_MS) return;
-    runGreeting();
-  }, [runGreeting]);
-
-  // Greet shortly after the senior lands on their pages
-  useEffect(() => {
-    if (role !== 'senior' || loading) return;
-    if (!location.pathname.startsWith('/senior')) return;
-
-    const timer = setTimeout(() => { maybeGreet(); }, 1500);
-    return () => clearTimeout(timer);
-  }, [role, loading, location.pathname, maybeGreet]);
-
-  // Re-greet whenever the app is reopened/resumed from the background
-  useEffect(() => {
-    if (role !== 'senior' || loading) return;
-
-    const handleVisibility = () => {
-      if (document.visibilityState === 'visible') {
-        maybeGreet();
-      }
-    };
-    document.addEventListener('visibilitychange', handleVisibility);
-    return () => document.removeEventListener('visibilitychange', handleVisibility);
-  }, [role, loading, maybeGreet]);
-
-  // ─── Medicine reminder notifications: escalating schedule per medicine ───
-  // Schedule: T-15 (gentle) → T+0 (time now!) → T+10 (still pending) → T+20 (urgent) → T+30 (caregiver alert)
-  useEffect(() => {
-    if (role !== 'senior' || loading) return;
-
-    // Clear old notification timeouts
-    notifTimeoutsRef.current.forEach(clearTimeout);
-    notifTimeoutsRef.current = [];
-
-    // Cancel previously scheduled OS notifications — they'll be rescheduled below
-    // from scratch, so any medicine marked taken since the last run stays cancelled.
-    cancelReminderNotifications(osNotifIdsRef.current);
-    osNotifIdsRef.current = [];
-
-    const now = new Date();
-    const nowMinutes = now.getHours() * 60 + now.getMinutes();
-
-    // Helper: check if a specific medicine is still not taken
-    const isStillPending = (medId: string) => {
-      const m = sharedMedicinesRef.current.find(cm => cm.id === medId);
-      return m ? !m.taken : false;
-    };
-
-    // Helper: schedule a single reminder
-    const scheduleReminder = (delayMs: number, callback: () => void) => {
-      if (delayMs < 0) return; // time already passed
-      const id = setTimeout(callback, delayMs);
-      notifTimeoutsRef.current.push(id);
-    };
-
-    // Helper: schedule the same reminder as a real OS notification, so it still
-    // arrives when the app is backgrounded or closed (setTimeout above only fires
-    // while the app is running in the foreground).
-    const scheduleOsReminder = (delayMs: number, tier: number, medId: string, slot: string, title: string, body: string) => {
-      if (delayMs < 0) return;
-      const id = hashToNotificationId(`${medId}|${slot}|${tier}`);
-      osNotifIdsRef.current.push(id);
-      scheduleReminderNotification({ id, title, body, at: new Date(Date.now() + delayMs) });
-    };
-
-    sharedMedicines.forEach(med => {
-      if (med.taken) return;
-      const slots = med.timing.split(',').map(s => s.trim());
-      const medNameEn = med.name;
-      const medNameHi = med.nameHi || med.name;
-      const medName = language === 'hi' ? medNameHi : medNameEn;
-
-      slots.forEach(slot => {
-        const [h, m] = slot.split(':').map(Number);
-        if (isNaN(h)) return;
-        const slotMinutes = h * 60 + (m || 0);
-
-        // ── Reminder 1: T-15 min — Gentle heads-up ──
-        const r1Offset = slotMinutes - 15;
-        if (r1Offset > nowMinutes) {
-          const r1Delay = (r1Offset - nowMinutes) * 60000;
-          const r1Title = t('Upcoming Medicine', 'आने वाली दवाई');
-          const r1Msg = language === 'en'
-            ? `Heads up: You need to take ${medName} at ${slot}. That's in 15 minutes.`
-            : `ध्यान दें: ${medName} ${slot} बजे लेनी है। 15 मिनट बाकी हैं।`;
-          scheduleReminder(r1Delay, () => {
-            if (!isStillPending(med.id)) return;
-            isProactiveRef.current = true;
-            setShowPanel(true);
-            setResponseText(r1Msg);
-            setAgentState('responding');
-            doSpeak(r1Msg);
-            toast({ title: r1Title, description: r1Msg });
-          });
-          scheduleOsReminder(r1Delay, 1, med.id, slot, r1Title, r1Msg);
-        }
-
-        // ── Reminder 2: T+0 — Exact time, asks for response ──
-        if (slotMinutes > nowMinutes) {
-          const r2Delay = (slotMinutes - nowMinutes) * 60000;
-          const r2Title = t('Medicine Time!', 'दवाई का समय!');
-          const r2Msg = language === 'en'
-            ? `It's ${slot} now. Time to take ${medName}! Did you take it?`
-            : `अभी ${slot} बज गए हैं। ${medName} लेने का समय! क्या आपने ली?`;
-          scheduleReminder(r2Delay, () => {
-            if (!isStillPending(med.id)) return;
-            isProactiveRef.current = true;
-            setShowPanel(true);
-            setResponseText(r2Msg);
-            setAgentState('responding');
-            // Route through the same 'medicine' convo handler the greeting flow
-            // uses, so a typed/tapped answer (not just speech) is understood.
-            convoStepRef.current = 'medicine';
-            doSpeak(r2Msg, () => { startListening(); });
-            toast({ title: r2Title, description: r2Msg, variant: 'destructive' });
-
-            // If no reply within 2 minutes → warn caregiver
-            scheduleReminder(2 * 60000, async () => {
-              if (!isStillPending(med.id)) return;
-              await addAlert({
-                type: 'medication',
-                message: `${medNameEn} reminder at ${slot} — senior did not respond. Medicine may not have been taken.`,
-                messageHi: `${medNameHi} की ${slot} बजे याद दिलाई — बुज़ुर्ग ने जवाब नहीं दिया। दवाई शायद नहीं ली गई।`,
-                time: new Date().toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' }),
-                severity: 'warning',
-              });
-            });
-          });
-          scheduleOsReminder(r2Delay, 2, med.id, slot, r2Title, r2Msg);
-        }
-
-        // ── Reminder 3: T+10 min — "You still haven't taken it" ──
-        const r3Offset = slotMinutes + 10;
-        if (r3Offset > nowMinutes) {
-          const r3Delay = (r3Offset - nowMinutes) * 60000;
-          const r3Title = t('Medicine Overdue', 'दवाई लेना बाकी');
-          const r3Msg = language === 'en'
-            ? `You still haven't taken ${medName}. It was due at ${slot}. Please take it now.`
-            : `आपने अभी तक ${medName} नहीं ली। ${slot} बजे लेनी थी। कृपया अभी लें।`;
-          scheduleReminder(r3Delay, () => {
-            if (!isStillPending(med.id)) return;
-            isProactiveRef.current = true;
-            setShowPanel(true);
-            setResponseText(r3Msg);
-            setAgentState('responding');
-            convoStepRef.current = 'medicine';
-            doSpeak(r3Msg, () => { startListening(); });
-            toast({ title: r3Title, description: r3Msg });
-
-            // If no reply within 2 minutes → warn caregiver again
-            scheduleReminder(2 * 60000, async () => {
-              if (!isStillPending(med.id)) return;
-              await addAlert({
-                type: 'medication',
-                message: `${medNameEn} is 10+ min overdue (${slot}). Senior not responding to reminders.`,
-                messageHi: `${medNameHi} 10+ मिनट से बाकी (${slot})। बुज़ुर्ग याद दिलाने पर जवाब नहीं दे रहे।`,
-                time: new Date().toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' }),
-                severity: 'warning',
-              });
-            });
-          });
-          scheduleOsReminder(r3Delay, 3, med.id, slot, r3Title, r3Msg);
-        }
-
-        // ── Reminder 4: T+20 min — Urgent warning ──
-        const r4Offset = slotMinutes + 20;
-        if (r4Offset > nowMinutes) {
-          const r4Delay = (r4Offset - nowMinutes) * 60000;
-          const r4Title = t('Urgent Reminder!', 'ज़रूरी याद!');
-          const r4Msg = language === 'en'
-            ? `Urgent: ${medName} is 20 minutes overdue! Please take it right now.`
-            : `ज़रूरी: ${medName} 20 मिनट से बाकी है! कृपया अभी लें।`;
-          scheduleReminder(r4Delay, async () => {
-            if (!isStillPending(med.id)) return;
-            isProactiveRef.current = true;
-            setShowPanel(true);
-            setResponseText(r4Msg);
-            setAgentState('responding');
-            convoStepRef.current = 'medicine';
-            doSpeak(r4Msg, () => { startListening(); });
-            toast({ title: r4Title, description: r4Msg, variant: 'destructive' });
-
-            // Send escalated alert to caregiver
-            await addAlert({
-              type: 'medication',
-              message: `URGENT: ${medNameEn} is 20 min overdue (${slot}). Senior has not responded to any reminder.`,
-              messageHi: `ज़रूरी: ${medNameHi} 20 मिनट से बाकी (${slot})। बुज़ुर्ग ने किसी भी याद का जवाब नहीं दिया।`,
-              time: new Date().toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' }),
-              severity: 'critical',
-            });
-          });
-          scheduleOsReminder(r4Delay, 4, med.id, slot, r4Title, r4Msg);
-        }
-
-        // ── Reminder 5: T+30 min — Alert caregiver ──
-        const r5Offset = slotMinutes + 30;
-        if (r5Offset > nowMinutes) {
-          const r5Delay = (r5Offset - nowMinutes) * 60000;
-          const r5Title = t('Caregiver Notified', 'देखभालकर्ता को सूचित किया');
-          const r5Msg = language === 'en'
-            ? `${medName} has not been taken for 30 minutes. Your caregiver has been notified.`
-            : `${medName} 30 मिनट से नहीं ली गई। आपके देखभालकर्ता को सूचित कर दिया गया है।`;
-          scheduleReminder(r5Delay, async () => {
-            if (!isStillPending(med.id)) return;
-            isProactiveRef.current = true;
-            setShowPanel(true);
-            setResponseText(r5Msg);
-            setAgentState('responding');
-            doSpeak(r5Msg);
-            toast({ title: r5Title, description: r5Msg, variant: 'destructive' });
-
-            // Send critical alert to caregiver
-            await addAlert({
-              type: 'medication',
-              message: `${medNameEn} was not taken at scheduled time ${slot}. 30 minutes overdue. Immediate attention needed.`,
-              messageHi: `${medNameHi} निर्धारित समय ${slot} पर नहीं ली गई। 30 मिनट की देरी। तुरंत ध्यान दें।`,
-              time: new Date().toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' }),
-              severity: 'critical',
-            });
-          });
-          scheduleOsReminder(r5Delay, 5, med.id, slot, r5Title, r5Msg);
-        }
-      });
-    });
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [role, loading, sharedMedicines, language, doSpeak, t, addAlert]);
-
   const {
     transcript,
     isListening,
@@ -630,12 +141,7 @@ const VoiceAssistantButton = () => {
   // Process transcript when speech recognition ends
   useEffect(() => {
     if (!isListening && transcript && agentState === 'listening') {
-      // If we're in a multi-turn conversation, route to convo handler
-      if (convoStepRef.current) {
-        handleConvoAnswer(transcript);
-      } else {
-        handleTranscript(transcript);
-      }
+      handleTranscript(transcript);
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [isListening, transcript]);
@@ -892,12 +398,6 @@ const VoiceAssistantButton = () => {
     if (agentState === 'listening') {
       stopListening();
     } else if (agentState === 'idle' || agentState === 'responding' || agentState === 'error') {
-      // Reset conversation state when user manually taps mic — this is a
-      // one-off command, not a proactive question, so closing it afterward
-      // should just close the panel rather than navigating anywhere.
-      isProactiveRef.current = false;
-      convoStepRef.current = null;
-      convoQueueRef.current = [];
       setShowPanel(true);
       setResponseText('');
       setManualInput('');
@@ -908,10 +408,6 @@ const VoiceAssistantButton = () => {
 
   const handleClose = () => {
     stopListening();
-    const wasProactive = isProactiveRef.current;
-    isProactiveRef.current = false;
-    convoStepRef.current = null;
-    convoQueueRef.current = [];
     if (Capacitor.isNativePlatform()) {
       TextToSpeech.stop().catch(() => {});
     } else {
@@ -922,13 +418,6 @@ const VoiceAssistantButton = () => {
     setResponseText('');
     setManualInput('');
     setLastAction(null);
-
-    // Closing a proactive greeting/reminder — as opposed to a manually
-    // invoked one-off voice command — takes the senior to their dashboard
-    // instead of leaving the panel's underlying page as-is.
-    if (wasProactive && role === 'senior') {
-      navigate('/senior', { replace: true });
-    }
   };
 
   // Typed or tapped answer — same effect as a recognized spoken transcript,
@@ -938,13 +427,17 @@ const VoiceAssistantButton = () => {
     if (!trimmed) return;
     stopListening();
     setManualInput('');
-    if (convoStepRef.current) {
-      handleConvoAnswer(trimmed);
-    } else {
-      handleTranscript(trimmed);
-    }
+    handleTranscript(trimmed);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [handleConvoAnswer, stopListening]);
+  }, [stopListening]);
+
+  const HINTS: { display: string; value: string }[] = [
+    { display: t('"I took my medicine"', '"मैंने दवाई खा ली"'), value: t('I took my medicine', 'मैंने दवाई खा ली') },
+    { display: t('"Remind me later"', '"बाद में याद दिलाओ"'), value: t('remind me later', 'बाद में याद दिलाओ') },
+    { display: t('"I had breakfast"', '"मैंने नाश्ता कर लिया"'), value: t('I had breakfast', 'मैंने नाश्ता कर लिया') },
+    { display: t('"I\'m feeling good"', '"मैं ठीक हूँ"'), value: t("I'm feeling good", 'मैं ठीक हूँ') },
+    { display: t('"What medicines are pending?"', '"कौन सी दवाई बाकी है?"'), value: t('what medicines are pending', 'कौन सी दवाई बाकी है') },
+  ];
 
   // Only show for senior role
   if (role !== 'senior') return null;
@@ -1016,47 +509,23 @@ const VoiceAssistantButton = () => {
               </div>
             )}
 
-            {/* Type or tap an answer — for when speech recognition doesn't catch it */}
+            {/* Type an answer — for when speech recognition doesn't catch it */}
             {agentState === 'listening' && (
-              <div className="space-y-3 mb-4">
-                {convoStepRef.current === 'wellbeing' ? (
-                  <div className="flex gap-2">
-                    <button onClick={() => submitManualAnswer('good')} className="flex-1 py-3 rounded-xl bg-success text-success-foreground font-semibold text-sm">
-                      😊 {t('Good', 'अच्छा')}
-                    </button>
-                    <button onClick={() => submitManualAnswer('okay')} className="flex-1 py-3 rounded-xl bg-secondary text-secondary-foreground font-semibold text-sm">
-                      🙂 {t('Okay', 'ठीक')}
-                    </button>
-                    <button onClick={() => submitManualAnswer('not well')} className="flex-1 py-3 rounded-xl bg-destructive text-destructive-foreground font-semibold text-sm">
-                      😟 {t('Not Well', 'अच्छा नहीं')}
-                    </button>
-                  </div>
-                ) : convoStepRef.current ? (
-                  <div className="flex gap-3">
-                    <button onClick={() => submitManualAnswer('yes')} className="flex-1 py-3 rounded-xl bg-success text-success-foreground font-semibold">
-                      ✅ {t('Yes', 'हाँ')}
-                    </button>
-                    <button onClick={() => submitManualAnswer('no')} className="flex-1 py-3 rounded-xl bg-secondary text-secondary-foreground font-semibold">
-                      {t('Not Yet', 'अभी नहीं')}
-                    </button>
-                  </div>
-                ) : null}
-                <div className="flex gap-2">
-                  <input
-                    value={manualInput}
-                    onChange={(e) => setManualInput(e.target.value)}
-                    onKeyDown={(e) => { if (e.key === 'Enter') submitManualAnswer(manualInput); }}
-                    placeholder={t('Or type your answer...', 'या अपना जवाब लिखें...')}
-                    className="flex-1 px-4 py-3 rounded-xl border border-gray-200 text-base text-gray-800"
-                  />
-                  <button
-                    onClick={() => submitManualAnswer(manualInput)}
-                    disabled={!manualInput.trim()}
-                    className="px-4 py-3 rounded-xl gradient-primary text-white font-semibold disabled:opacity-40"
-                  >
-                    {t('Send', 'भेजें')}
-                  </button>
-                </div>
+              <div className="flex gap-2 mb-4">
+                <input
+                  value={manualInput}
+                  onChange={(e) => setManualInput(e.target.value)}
+                  onKeyDown={(e) => { if (e.key === 'Enter') submitManualAnswer(manualInput); }}
+                  placeholder={t('Or type here...', 'या यहाँ लिखें...')}
+                  className="flex-1 px-4 py-3 rounded-xl border border-gray-200 text-base text-gray-800"
+                />
+                <button
+                  onClick={() => submitManualAnswer(manualInput)}
+                  disabled={!manualInput.trim()}
+                  className="px-4 py-3 rounded-xl gradient-primary text-white font-semibold disabled:opacity-40"
+                >
+                  {t('Send', 'भेजें')}
+                </button>
               </div>
             )}
 
@@ -1129,23 +598,22 @@ const VoiceAssistantButton = () => {
               )}
             </div>
 
-            {/* Help hints */}
-            {!transcript && agentState !== 'processing' && !convoStepRef.current && (
+            {/* Help hints — tappable, not just examples */}
+            {!transcript && agentState !== 'processing' && (
               <div className="mt-4 text-center">
                 <p className="text-sm text-gray-400 mb-2">
-                  {t('Try saying:', 'कह कर देखें:')}
+                  {t('Try saying or tap one:', 'कह कर देखें या टैप करें:')}
                 </p>
                 <div className="flex flex-wrap gap-2 justify-center">
-                  {[
-                    t('"I took my medicine"', '"मैंने दवाई खा ली"'),
-                    t('"Remind me later"', '"बाद में याद दिलाओ"'),
-                    t('"I had breakfast"', '"मैंने नाश्ता कर लिया"'),
-                    t('"I\'m feeling good"', '"मैं ठीक हूँ"'),
-                    t('"What medicines are pending?"', '"कौन सी दवाई बाकी है?"'),
-                  ].map((hint, i) => (
-                    <span key={i} className="text-xs bg-gray-100 text-gray-600 rounded-full px-3 py-1.5">
-                      {hint}
-                    </span>
+                  {HINTS.map((hint, i) => (
+                    <button
+                      key={i}
+                      type="button"
+                      onClick={() => submitManualAnswer(hint.value)}
+                      className="text-xs bg-gray-100 text-gray-600 rounded-full px-3 py-1.5 hover:bg-gray-200 active:scale-95 transition-all"
+                    >
+                      {hint.display}
+                    </button>
                   ))}
                 </div>
               </div>
