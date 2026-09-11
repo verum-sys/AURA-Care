@@ -79,3 +79,25 @@ export async function cancelReminderNotifications(ids: number[]): Promise<void> 
     console.error('[notifications] cancel failed', err);
   }
 }
+
+// Android only auto-displays an FCM push in the system tray while the app is
+// backgrounded or killed — with the app open, `pushNotificationReceived`
+// fires instead and nothing appears unless something shows it. Re-display it
+// as a local notification so a reminder is visible no matter what state the
+// app is in when it arrives.
+export async function showForegroundPush(title: string, body: string): Promise<void> {
+  if (!Capacitor.isNativePlatform()) return;
+  try {
+    await LocalNotifications.schedule({
+      notifications: [{
+        id: Math.abs(Date.now() % 2147483647),
+        title,
+        body,
+        channelId: CHANNEL_ID,
+        schedule: { at: new Date(Date.now() + 500) },
+      }],
+    });
+  } catch (err) {
+    console.error('[notifications] foreground display failed', err);
+  }
+}

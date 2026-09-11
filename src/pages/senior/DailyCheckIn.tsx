@@ -1,6 +1,6 @@
 import { useState, useEffect, useMemo } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { Check, Clock } from 'lucide-react';
+import { Check } from 'lucide-react';
 import SeniorLayout from '@/components/SeniorLayout';
 import { useApp } from '@/context/AppContext';
 import { toast } from '@/hooks/use-toast';
@@ -9,7 +9,7 @@ import * as db from '@/lib/database';
 
 type Mood = 'good' | 'okay' | 'not_well';
 type MealType = 'breakfast' | 'lunch' | 'dinner';
-type Step = 'mood' | 'pain' | 'medicines' | 'meals' | 'done';
+type Step = 'loading' | 'mood' | 'pain' | 'item' | 'done';
 
 const painAreas = [
   { en: 'Head', hi: 'सिर', emoji: '🤕' },
@@ -26,55 +26,137 @@ const mealLabel: Record<MealType, [string, string]> = {
   dinner: ['Dinner', 'रात का खाना'],
 };
 
-// Proactive daily check-in — shown right after every login so the senior
-// is asked how they're feeling / whether they've taken medicine / eaten,
-// instead of having to navigate to each section themselves.
+interface MedicineQueueItem {
+  kind: 'medicine';
+  medicineId: string;
+  name: string;
+  nameHi: string;
+  dosage: string;
+  slot: string;
+  minutes: number;
+}
+interface MealQueueItem {
+  kind: 'meal';
+  meal: MealType;
+  minutes: number;
+}
+type QueueItem = MedicineQueueItem | MealQueueItem;
+
+function timeStrToMinutes(t: string): number {
+  const [h, m] = t.split(':').map(Number);
+  return (h || 0) * 60 + (m || 0);
+}
+
+const DEFAULT_ROUTINE_TIMES: Record<MealType, string> = {
+  breakfast: '08:00',
+  lunch: '13:00',
+  dinner: '20:00',
+};
+
+// Proactive daily check-in — shown right after every login. Rather than
+// asking a fixed script every time, it builds a queue of only what's
+// actually due-and-unanswered as of right now: mood once per day, each
+// medicine dose whose scheduled time has passed and hasn't been logged
+// (so a missed 1pm dose and a missed 5pm dose are both asked about,
+// separately, if the app isn't opened until 9pm), and each meal whose
+// routine time has passed and isn't logged yet. Anything already answered
+// — via this screen, the Medicines/Meals pages, or (once wired) a
+// notification action — is read straight from the DB, so it's never asked
+// twice.
 const DailyCheckIn = () => {
   const navigate = useNavigate();
   const {
     t, currentUserName, currentUserId, role, linkedSenior,
-    setWellbeing, addAlert, sharedMedicines, markMedicineTaken,
+    setWellbeing, addAlert, sharedMedicines, wellbeing, seniorRoutine, logMedicineSlot,
   } = useApp();
 
   const seniorId = role === 'senior' ? currentUserId : linkedSenior?.seniorId;
   const { speak, cancel: cancelSpeech } = useTextToSpeech();
 
-  const [step, setStep] = useState<Step>('mood');
-  const [mealsLogged, setMealsLogged] = useState<Record<string, boolean>>({});
-  const [mealsLoaded, setMealsLoaded] = useState(false);
+  const [step, setStep] = useState<Step>('loading');
+  const [queue, setQueue] = useState<QueueItem[]>([]);
+  const [queueIndex, setQueueIndex] = useState(0);
 
+  const answeredMoodToday = useMemo(() => {
+    if (!wellbeing?.timestamp) return false;
+    return new Date(wellbeing.timestamp).toDateString() === new Date().toDateString();
+  }, [wellbeing]);
+
+  // Build the due-and-unanswered queue once meal + medicine-slot logs are
+  // in. Re-runs if the medicine list changes (e.g. a caregiver added one
+  // while this was open), but not on a timer — the queue is a snapshot for
+  // this visit, same as the rest of the app.
   useEffect(() => {
     if (!seniorId) return;
-    db.getTodayMealLogs(seniorId).then(logs => {
-      const map: Record<string, boolean> = {};
-      for (const l of logs) map[l.meal_type] = l.eaten;
-      setMealsLogged(map);
-      setMealsLoaded(true);
-    });
-  }, [seniorId]);
+    let cancelled = false;
 
-  const pendingMeds = useMemo(() => sharedMedicines.filter(m => !m.taken), [sharedMedicines]);
+    (async () => {
+      const [mealLogs, slotLogs] = await Promise.all([
+        db.getTodayMealLogs(seniorId),
+        db.getTodayMedicineSlotLogs(seniorId),
+      ]);
+      if (cancelled) return;
 
-  const hour = new Date().getHours();
-  const currentMeal: MealType = hour < 11 ? 'breakfast' : hour < 15 ? 'lunch' : 'dinner';
-  const currentMealAnswered = mealsLogged[currentMeal] !== undefined;
+      const now = new Date();
+      const nowMinutes = now.getHours() * 60 + now.getMinutes();
+      const loggedMeals = new Set(mealLogs.map(l => l.meal_type));
+      const loggedSlots = new Set(slotLogs.map(l => `${l.medicine_id}|${l.slot}`));
 
-  // Decide the next step given what's still actually pending to ask about.
-  // While the meal-log fetch is still in flight, "not yet known to be
-  // answered" must default to showing the meals step (not skipping it) —
-  // the auto-skip effect below will fast-forward past it once the fetch
-  // resolves and confirms it was already answered.
-  const advance = (from: Step) => {
-    if (from === 'mood' || from === 'pain') {
-      if (pendingMeds.length > 0) return setStep('medicines');
-      if (!(mealsLoaded && currentMealAnswered)) return setStep('meals');
-      return setStep('done');
-    }
-    if (from === 'medicines') {
-      if (!(mealsLoaded && currentMealAnswered)) return setStep('meals');
-      return setStep('done');
-    }
-    setStep('done');
+      const items: QueueItem[] = [];
+
+      for (const med of sharedMedicines) {
+        const slots = med.timing.split(',').map(s => s.trim()).filter(Boolean);
+        for (const slot of slots) {
+          const minutes = timeStrToMinutes(slot);
+          if (minutes > nowMinutes) continue; // not due yet
+          if (loggedSlots.has(`${med.id}|${slot}`)) continue; // already answered
+          items.push({
+            kind: 'medicine',
+            medicineId: med.id,
+            name: med.name,
+            nameHi: med.nameHi || med.name,
+            dosage: med.dosage,
+            slot,
+            minutes,
+          });
+        }
+      }
+
+      const mealAnchors: [MealType, string][] = [
+        ['breakfast', seniorRoutine?.breakfastTime ?? DEFAULT_ROUTINE_TIMES.breakfast],
+        ['lunch', seniorRoutine?.lunchTime ?? DEFAULT_ROUTINE_TIMES.lunch],
+        ['dinner', seniorRoutine?.dinnerTime ?? DEFAULT_ROUTINE_TIMES.dinner],
+      ];
+      for (const [meal, timeStr] of mealAnchors) {
+        const minutes = timeStrToMinutes(timeStr);
+        if (minutes > nowMinutes) continue; // not due yet
+        if (loggedMeals.has(meal)) continue; // already answered
+        items.push({ kind: 'meal', meal, minutes });
+      }
+
+      items.sort((a, b) => a.minutes - b.minutes);
+      setQueue(items);
+      setQueueIndex(0);
+      setStep(!answeredMoodToday ? 'mood' : items.length > 0 ? 'item' : 'done');
+      // eslint-disable-next-line react-hooks/exhaustive-deps
+    })();
+
+    return () => { cancelled = true; };
+    // Deliberately excludes answeredMoodToday/wellbeing — mood is checked
+    // once here at build time; answering it moves the step forward directly
+    // (advancePastMood) rather than re-running this whole fetch.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [seniorId, sharedMedicines, seniorRoutine]);
+
+  const currentItem = queue[queueIndex];
+
+  const advancePastMood = () => {
+    setStep(queue.length > 0 ? 'item' : 'done');
+  };
+
+  const advanceQueue = () => {
+    if (queueIndex + 1 < queue.length) setQueueIndex(i => i + 1);
+    else setStep('done');
   };
 
   const handleMood = async (selected: Mood) => {
@@ -84,7 +166,7 @@ const DailyCheckIn = () => {
     }
     await setWellbeing({ mood: selected, painArea: null, timestamp: new Date().toISOString() });
     toast({ title: selected === 'good' ? t('😊 Glad to hear!', '😊 सुनकर खुशी हुई!') : t('🙂 Take care!', '🙂 ध्यान रखें!') });
-    advance('mood');
+    advancePastMood();
   };
 
   const handlePain = async (area: string) => {
@@ -101,55 +183,62 @@ const DailyCheckIn = () => {
       description: t(`Pain reported in: ${area}. Help is coming.`, `दर्द की जगह: ${area}। मदद आ रही है।`),
       variant: 'destructive',
     });
-    advance('pain');
+    advancePastMood();
   };
 
-  const handleTaken = async (id: string) => {
-    await markMedicineTaken(id);
-    toast({ title: t('✅ Medicine marked as taken!', '✅ दवाई ली गई!') });
+  const handleMedicineAnswer = async (item: MedicineQueueItem, taken: boolean) => {
+    if (taken) {
+      await logMedicineSlot(item.medicineId, item.slot);
+      toast({ title: t('✅ Medicine marked as taken!', '✅ दवाई ली गई!') });
+    } else {
+      toast({ title: t("No problem, we'll check again later.", 'कोई बात नहीं, बाद में फिर पूछेंगे।') });
+    }
+    advanceQueue();
   };
 
-  const handleMeal = async (eaten: boolean) => {
+  const handleMealAnswer = async (item: MealQueueItem, eaten: boolean) => {
     if (!seniorId) return;
-    setMealsLogged(prev => ({ ...prev, [currentMeal]: eaten }));
-    await db.logMeal(seniorId, currentMeal, eaten);
-    toast({ title: eaten ? t('Great! Stay healthy!', 'बहुत बढ़िया! स्वस्थ रहें!') : t('Reminder set for 30 minutes', '30 मिनट का रिमाइंडर सेट') });
-    advance('meals');
+    await db.logMeal(seniorId, item.meal, eaten);
+    toast({
+      title: eaten
+        ? t('Great! Stay healthy!', 'बहुत बढ़िया! स्वस्थ रहें!')
+        : t("Got it, we'll check again later.", 'ठीक है, बाद में फिर पूछेंगे।'),
+    });
+    advanceQueue();
   };
-
-  // If medicines/meals turn out to already be fully handled once loaded,
-  // and we're sitting on a step with nothing left to ask, skip forward.
-  useEffect(() => {
-    if (step === 'medicines' && pendingMeds.length === 0) advance('medicines');
-    if (step === 'meals' && mealsLoaded && currentMealAnswered) advance('meals');
-  }, [step, pendingMeds.length, mealsLoaded, currentMealAnswered]);
 
   const firstName = currentUserName.split(' ')[0];
 
   // Speak each step's question as it becomes active — app speaks, user still
-  // taps to answer. Keyed on `step` alone (not on pendingMeds/currentMeal) so
-  // marking one medicine taken mid-step doesn't re-trigger/interrupt speech.
+  // taps to answer.
   useEffect(() => {
     if (step === 'mood') {
       speak(t(`Hi ${firstName}, how are you feeling today?`, `नमस्ते ${firstName}, आज आप कैसा महसूस कर रहे हैं?`));
     } else if (step === 'pain') {
       speak(t('Where does it hurt?', 'कहाँ दर्द हो रहा है?'));
-    } else if (step === 'medicines') {
-      const names = pendingMeds.map(m => t(m.name, m.nameHi || m.name)).join(', ');
-      speak(t(`Have you taken these? ${names}.`, `क्या आपने ये ले ली हैं? ${names}।`));
-    } else if (step === 'meals') {
-      speak(t(`Have you had your ${mealLabel[currentMeal][0]}?`, `क्या आपने ${mealLabel[currentMeal][1]} खाया?`));
+    } else if (step === 'item' && currentItem) {
+      if (currentItem.kind === 'medicine') {
+        speak(t(`Have you taken ${currentItem.name}?`, `क्या आपने ${currentItem.nameHi} ले ली?`));
+      } else {
+        speak(t(`Have you had your ${mealLabel[currentItem.meal][0]}?`, `क्या आपने ${mealLabel[currentItem.meal][1]} खाया?`));
+      }
     } else if (step === 'done') {
       speak(t('All set for now! Thanks for checking in.', 'अभी के लिए सब ठीक है! जाँच करने के लिए धन्यवाद।'));
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [step]);
+  }, [step, queueIndex]);
 
   // Stop any in-flight speech if the senior navigates away mid check-in.
   useEffect(() => () => cancelSpeech(), [cancelSpeech]);
 
   return (
     <SeniorLayout title={t('Daily Check-In', 'दैनिक जाँच')}>
+      {step === 'loading' && (
+        <div className="min-h-[50vh] flex items-center justify-center">
+          <span className="text-4xl animate-pulse">⏳</span>
+        </div>
+      )}
+
       {step === 'mood' && (
         <div className="flex flex-col items-center text-center">
           <span className="text-6xl mb-4 animate-slide-up">💭</span>
@@ -191,55 +280,37 @@ const DailyCheckIn = () => {
         </div>
       )}
 
-      {step === 'medicines' && (
-        <div className="space-y-4">
-          <div className="text-center mb-2">
-            <span className="text-5xl mb-4 block animate-slide-up">💊</span>
-            <h2 className="text-elder-2xl font-black text-foreground animate-slide-up-delay-1">
-              {t('Have you taken these?', 'क्या आपने ये ले ली हैं?')}
-            </h2>
+      {step === 'item' && currentItem?.kind === 'medicine' && (
+        <div className="flex flex-col items-center text-center">
+          <span className="text-6xl mb-4 animate-slide-up">💊</span>
+          <h2 className="text-elder-2xl font-black text-foreground animate-slide-up-delay-1">
+            {t(`Have you taken ${currentItem.name}?`, `क्या आपने ${currentItem.nameHi} ले ली?`)}
+          </h2>
+          <p className="text-muted-foreground font-semibold mt-2 animate-slide-up-delay-2">
+            🕐 {currentItem.slot} · {currentItem.dosage}
+          </p>
+          <div className="w-full mt-8 space-y-4">
+            <button onClick={() => handleMedicineAnswer(currentItem, true)} className="w-full elder-tile bg-success text-success-foreground text-elder-xl py-6 animate-slide-up-delay-3">
+              <Check className="w-6 h-6 mr-2 inline" /> {t('Yes, taken', 'हाँ, ली गई')}
+            </button>
+            <button onClick={() => handleMedicineAnswer(currentItem, false)} className="w-full elder-tile bg-secondary text-secondary-foreground text-elder-xl py-6 animate-slide-up-delay-4">
+              ⏰ {t('Not Yet', 'अभी नहीं')}
+            </button>
           </div>
-          {pendingMeds.map((med, i) => (
-            <div key={med.id} className={`bg-card rounded-elder p-5 shadow-card border-2 border-warning/20 animate-slide-up-delay-${Math.min(i + 1, 5)}`}>
-              <div className="mb-3">
-                <h3 className="text-elder-lg font-bold text-foreground">{t(med.name, med.nameHi)}</h3>
-                <p className="text-muted-foreground font-semibold">🕐 {med.timing} · {med.dosage}</p>
-              </div>
-              <div className="flex gap-3">
-                <button onClick={() => handleTaken(med.id)} className="flex-1 elder-tile bg-success text-success-foreground py-3 min-h-0 text-base">
-                  <Check className="w-5 h-5 mr-2" />
-                  {t('Taken', 'ली गई')}
-                </button>
-                <button
-                  onClick={() => toast({ title: t('⏰ Reminder set for 30 minutes', '⏰ 30 मिनट का रिमाइंडर सेट') })}
-                  className="flex-1 elder-tile bg-muted text-foreground py-3 min-h-0 text-base"
-                >
-                  <Clock className="w-5 h-5 mr-2" />
-                  {t('Remind Later', 'बाद में याद दिलाएं')}
-                </button>
-              </div>
-            </div>
-          ))}
-          <button
-            onClick={() => advance('medicines')}
-            className="w-full py-3 rounded-elder border border-border bg-card text-foreground font-bold text-sm mt-2"
-          >
-            {t('Continue', 'जारी रखें')}
-          </button>
         </div>
       )}
 
-      {step === 'meals' && (
+      {step === 'item' && currentItem?.kind === 'meal' && (
         <div className="flex flex-col items-center text-center">
           <span className="text-6xl mb-4 animate-slide-up">🍽️</span>
           <h2 className="text-elder-2xl font-black text-foreground animate-slide-up-delay-1">
-            {t(`Have you had your ${mealLabel[currentMeal][0]}?`, `क्या आपने ${mealLabel[currentMeal][1]} खाया?`)}
+            {t(`Have you had your ${mealLabel[currentItem.meal][0]}?`, `क्या आपने ${mealLabel[currentItem.meal][1]} खाया?`)}
           </h2>
           <div className="w-full mt-8 space-y-4">
-            <button onClick={() => handleMeal(true)} className="w-full elder-tile bg-success text-success-foreground text-elder-xl py-6 animate-slide-up-delay-2">
+            <button onClick={() => handleMealAnswer(currentItem, true)} className="w-full elder-tile bg-success text-success-foreground text-elder-xl py-6 animate-slide-up-delay-2">
               ✅ {t('Yes, I ate!', 'हाँ, खा लिया!')}
             </button>
-            <button onClick={() => handleMeal(false)} className="w-full elder-tile bg-secondary text-secondary-foreground text-elder-xl py-6 animate-slide-up-delay-3">
+            <button onClick={() => handleMealAnswer(currentItem, false)} className="w-full elder-tile bg-secondary text-secondary-foreground text-elder-xl py-6 animate-slide-up-delay-3">
               ⏰ {t('Not Yet', 'अभी नहीं')}
             </button>
           </div>
@@ -252,7 +323,7 @@ const DailyCheckIn = () => {
             <span className="text-4xl">✅</span>
           </div>
           <h2 className="text-elder-xl font-black text-foreground">
-            {t("All set for now!", 'अभी के लिए सब ठीक है!')}
+            {t('All set for now!', 'अभी के लिए सब ठीक है!')}
           </h2>
           <p className="text-muted-foreground font-semibold mt-2 mb-8 text-center">
             {t('Thanks for checking in.', 'जाँच करने के लिए धन्यवाद।')}

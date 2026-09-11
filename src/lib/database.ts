@@ -508,6 +508,56 @@ export async function getTodayMedicineLogs(seniorId: string): Promise<DBMedicine
   return (data ?? []) as DBMedicineLog[];
 }
 
+// ─── Per-dose (slot) medicine tracking ────────────────────
+// A medicine with e.g. timing "13:00, 17:00" is two separate doses per day.
+// medicine_logs is keyed on (medicine_id, taken_date, slot) — see migration
+// 0010 — so each dose is logged and asked about independently, instead of
+// one "taken today" flag covering the whole day.
+
+export async function getTodayMedicineSlotLogs(seniorId: string): Promise<{ medicine_id: string; slot: string }[]> {
+  const today = new Date().toISOString().slice(0, 10);
+
+  const { data, error } = await supabase
+    .from('medicine_logs')
+    .select('medicine_id, slot')
+    .eq('senior_id', seniorId)
+    .eq('taken_date', today);
+
+  if (error) throw error;
+  return (data ?? []) as { medicine_id: string; slot: string }[];
+}
+
+export async function logMedicineSlotTaken(medicineId: string, seniorId: string, slot: string): Promise<void> {
+  const now = new Date();
+  const todayStr = now.toISOString().slice(0, 10);
+
+  const { data: med } = await supabase
+    .from('medicines')
+    .select('name, dosage, senior_id')
+    .eq('id', medicineId)
+    .single();
+
+  await supabase
+    .from('medicine_logs')
+    .upsert({
+      medicine_id: medicineId,
+      senior_id: seniorId || med?.senior_id || '',
+      medicine_name: med?.name || '',
+      dosage: med?.dosage || '',
+      taken_date: todayStr,
+      taken_at: now.toISOString(),
+      slot,
+    }, { onConflict: 'medicine_id,taken_date,slot' });
+
+  // Keep the day-level flag in sync so adherence stats, CardDetail, and
+  // Medicines.tsx — which only know "taken today: yes/no", not slots — still
+  // see this medicine as taken once at least one dose today is logged.
+  await supabase
+    .from('medicines')
+    .update({ taken: true, taken_at: now.toISOString() })
+    .eq('id', medicineId);
+}
+
 // ─── Wellbeing ──────────────────────────────────────────
 
 export async function getLatestWellbeing(seniorId: string): Promise<DBWellbeing | null> {

@@ -125,6 +125,7 @@ interface AppContextType {
   sharedMedicines: SharedMedicine[];
   setSharedMedicines: (meds: SharedMedicine[]) => Promise<void>;
   markMedicineTaken: (id: string) => Promise<void>;
+  logMedicineSlot: (id: string, slot: string) => Promise<void>;
   deactivateMedicine: (id: string) => Promise<void>;
   // Medicine history
   medicineHistory: db.DBMedicineLog[];
@@ -684,6 +685,20 @@ export const AppProvider = ({ children }: { children: ReactNode }) => {
     }
   }, [scopedSeniorId]);
 
+  // Logs one specific dose (e.g. the 17:00 slot of a twice-daily medicine)
+  // rather than the whole day — see migration 0010.
+  const logMedicineSlot = useCallback(async (id: string, slot: string) => {
+    if (!scopedSeniorId) return;
+    try {
+      await db.logMedicineSlotTaken(id, scopedSeniorId, slot);
+      setSharedMedicinesState(prev =>
+        prev.map(m => m.id === id ? { ...m, taken: true } : m)
+      );
+    } catch (err) {
+      console.error('Error logging medicine slot:', err);
+    }
+  }, [scopedSeniorId]);
+
   // ─── Deactivate (end early) a temporary medicine — primary caregiver only ─
   const deactivateMedicine = useCallback(async (id: string) => {
     if (role === 'caregiver' && !isPrimaryCaregiver) {
@@ -985,7 +1000,7 @@ export const AppProvider = ({ children }: { children: ReactNode }) => {
       caregiverProfile, updateCaregiverProfile, needsOnboarding, updateRelationship, completeOnboarding,
       seniorRoutine, updateRoutine,
       patientDetails, updatePatientDetails,
-      sharedMedicines, setSharedMedicines, markMedicineTaken, deactivateMedicine,
+      sharedMedicines, setSharedMedicines, markMedicineTaken, logMedicineSlot, deactivateMedicine,
       medicineHistory, loadMedicineHistory,
       wellbeing, setWellbeing,
       dynamicAlerts, addAlert, markAlertRead, markAllAlertsRead,

@@ -16,11 +16,43 @@ export function useFcmRegistration(userId: string | null) {
   const [isSubscribed, setIsSubscribed] = useState(false);
   const [loading, setLoading] = useState(false);
 
-  useEffect(() => {
-    PushNotifications.checkPermissions().then((status) => {
-      setPermission(status.receive === 'granted' ? 'granted' : status.receive === 'denied' ? 'denied' : 'default');
-    }).catch(() => {});
+  const register = useCallback(async (): Promise<string | null> => {
+    const tokenPromise = new Promise<string>((resolve, reject) => {
+      PushNotifications.addListener('registration', (token) => resolve(token.value));
+      PushNotifications.addListener('registrationError', (err) => reject(new Error(err.error)));
+    });
+    await PushNotifications.register();
+    return tokenPromise;
   }, []);
+
+  // If permission was already granted in a previous session, silently
+  // re-register on every app start instead of waiting for a banner tap —
+  // this is what keeps the token alive across app updates/reinstalls, and
+  // is also what makes the "Enable Reminders" banner correctly stay hidden
+  // instead of reappearing on every launch even though notifications are
+  // already on.
+  useEffect(() => {
+    if (!userId) return;
+    let cancelled = false;
+
+    PushNotifications.checkPermissions().then(async (status) => {
+      if (cancelled) return;
+      const granted = status.receive === 'granted';
+      setPermission(granted ? 'granted' : status.receive === 'denied' ? 'denied' : 'default');
+      if (!granted) return;
+
+      try {
+        const token = await register();
+        if (cancelled || !token) return;
+        await db.saveFcmToken(userId, token);
+        setIsSubscribed(true);
+      } catch (err) {
+        console.error('useFcmRegistration: silent refresh failed', err);
+      }
+    }).catch(() => {});
+
+    return () => { cancelled = true; };
+  }, [userId, register]);
 
   const subscribe = useCallback(async () => {
     if (!userId) return false;
@@ -32,13 +64,8 @@ export function useFcmRegistration(userId: string | null) {
       setPermission(granted ? 'granted' : 'denied');
       if (!granted) return false;
 
-      const tokenPromise = new Promise<string>((resolve, reject) => {
-        PushNotifications.addListener('registration', (token) => resolve(token.value));
-        PushNotifications.addListener('registrationError', (err) => reject(new Error(err.error)));
-      });
-
-      await PushNotifications.register();
-      const token = await tokenPromise;
+      const token = await register();
+      if (!token) return false;
 
       await db.saveFcmToken(userId, token);
       setIsSubscribed(true);
@@ -49,7 +76,7 @@ export function useFcmRegistration(userId: string | null) {
     } finally {
       setLoading(false);
     }
-  }, [userId]);
+  }, [userId, register]);
 
   return { isSupported, permission, isSubscribed, loading, subscribe };
 }

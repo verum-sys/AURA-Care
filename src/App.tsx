@@ -7,7 +7,10 @@ import { BrowserRouter, Routes, Route, useLocation, useNavigate } from "react-ro
 import { Show, SignUpButton, UserButton, useClerk } from "@clerk/react";
 import { Capacitor } from "@capacitor/core";
 import { App as CapacitorApp } from "@capacitor/app";
-import { AppProvider } from "@/context/AppContext";
+import { PushNotifications } from "@capacitor/push-notifications";
+import { AppProvider, useApp } from "@/context/AppContext";
+import { useFcmRegistration } from "@/hooks/useFcmRegistration";
+import { showForegroundPush } from "@/lib/notifications";
 import SsoCallback from "./pages/SsoCallback";
 import Privacy from "./pages/Privacy";
 import DeleteAccount from "./pages/DeleteAccount";
@@ -171,6 +174,39 @@ const NativeOAuthBridge = () => {
   return null;
 };
 
+// Always mounted (unlike PushOptInBanner, which unmounts once subscribed) —
+// keeps the FCM token silently refreshed and handles a push both while the
+// app is open (Android doesn't auto-show those — see showForegroundPush)
+// and when it's tapped (deep-links into the screen the reminder is about,
+// e.g. /senior/checkin, instead of just cold-opening to the last screen).
+const NotificationBridge = () => {
+  const navigate = useNavigate();
+  const { currentUserId } = useApp();
+  useFcmRegistration(currentUserId); // side effect only: silent token refresh
+
+  useEffect(() => {
+    if (!Capacitor.isNativePlatform()) return;
+
+    const receivedListener = PushNotifications.addListener('pushNotificationReceived', (notification) => {
+      const title = notification.title ?? 'Kin Care';
+      const body = notification.body ?? '';
+      showForegroundPush(title, body);
+    });
+
+    const actionListener = PushNotifications.addListener('pushNotificationActionPerformed', (action) => {
+      const url = action.notification.data?.url;
+      if (typeof url === 'string' && url) navigate(url);
+    });
+
+    return () => {
+      receivedListener.then(l => l.remove());
+      actionListener.then(l => l.remove());
+    };
+  }, [navigate]);
+
+  return null;
+};
+
 const AppRoutes = () => {
   const location = useLocation();
 
@@ -196,6 +232,7 @@ const AppRoutes = () => {
   return (
     <>
       <NativeOAuthBridge />
+      <NotificationBridge />
       <Show when="signed-out">
         <AuthScreen />
       </Show>

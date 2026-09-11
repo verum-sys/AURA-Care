@@ -43,3 +43,4 @@ android/keystore.properties
 *.jks
 google-services.json
 .vercel
+supabase/.temp/
