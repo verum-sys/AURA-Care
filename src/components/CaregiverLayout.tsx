@@ -2,6 +2,7 @@ import { ReactNode, useEffect } from 'react';
 import { useNavigate, useLocation } from 'react-router-dom';
 import { LayoutDashboard, Bell, Settings, ArrowLeft, Scan, Heart } from 'lucide-react';
 import LanguageToggle from './LanguageToggle';
+import AccountMenuLogo from './AccountMenuLogo';
 import { useApp } from '@/context/AppContext';
 
 interface CaregiverLayoutProps {
@@ -35,16 +36,13 @@ const CaregiverLayout = ({ children, title }: CaregiverLayoutProps) => {
   return (
     <div className="min-h-screen bg-background flex flex-col max-w-md mx-auto">
       {/* Header */}
-      {/* pr-14 (not px-5) — the app-wide UserButton avatar floats fixed in
-          the top-right corner (see App.tsx), so the header's own right-side
-          controls need extra clearance to avoid sitting underneath it. */}
-      <header className="flex items-center justify-between pl-5 pr-14 py-3.5 bg-card border-b border-border sticky top-0 z-40">
+      <header className="flex items-center justify-between px-5 py-3.5 bg-card border-b border-border sticky top-0 z-40">
         <div className="flex items-center gap-3">
           <button type="button" onClick={() => navigate(-1)} className="p-2 -ml-2 rounded-full hover:bg-muted active:scale-95 transition-all">
             <ArrowLeft className="w-5 h-5 text-foreground" />
           </button>
           <div className="flex items-center gap-2">
-            <img src="/logo.jpg" alt="Kin Care" className="h-7" />
+            <AccountMenuLogo className="h-7" />
             {linkedSenior && (
               <div className="flex items-center gap-1 ml-1">
                 <Heart className="w-3 h-3 text-primary" />

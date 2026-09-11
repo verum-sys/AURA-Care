@@ -4,7 +4,7 @@ import { Toaster as Sonner } from "@/components/ui/sonner";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { BrowserRouter, Routes, Route, useLocation, useNavigate } from "react-router-dom";
-import { Show, SignUpButton, UserButton, useClerk } from "@clerk/react";
+import { Show, SignUpButton, useClerk } from "@clerk/react";
 import { Capacitor } from "@capacitor/core";
 import { App as CapacitorApp } from "@capacitor/app";
 import { PushNotifications } from "@capacitor/push-notifications";
@@ -237,9 +237,6 @@ const AppRoutes = () => {
         <AuthScreen />
       </Show>
       <Show when="signed-in">
-        <div className="fixed top-3 right-3 z-50">
-          <UserButton />
-        </div>
         <Routes>
           <Route path="/" element={<Index />} />
           <Route path="/senior" element={<Welcome />} />

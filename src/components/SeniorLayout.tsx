@@ -3,6 +3,7 @@ import { useNavigate } from 'react-router-dom';
 import { ArrowLeft } from 'lucide-react';
 import VoiceAssistantButton from './VoiceAssistantButton';
 import LanguageToggle from './LanguageToggle';
+import AccountMenuLogo from './AccountMenuLogo';
 import { useApp } from '@/context/AppContext';
 
 interface SeniorLayoutProps {
@@ -23,17 +24,14 @@ const SeniorLayout = ({ children, title, showBack = false }: SeniorLayoutProps) 
   return (
     <div className="min-h-screen bg-background flex flex-col max-w-md mx-auto">
       {/* Header */}
-      {/* pr-14 (not px-5) — the app-wide UserButton avatar floats fixed in
-          the top-right corner (see App.tsx), so the header's own right-side
-          controls need extra clearance to avoid sitting underneath it. */}
-      <header className="flex items-center justify-between pl-5 pr-14 py-3.5 bg-card/95 backdrop-blur-md border-b border-border sticky top-0 z-40">
+      <header className="flex items-center justify-between px-5 py-3.5 bg-card/95 backdrop-blur-md border-b border-border sticky top-0 z-40">
         <div className="flex items-center gap-3">
           {showBack ? (
             <button onClick={() => navigate(-1)} className="p-2 -ml-2 rounded-full hover:bg-muted active:scale-95 transition-all">
               <ArrowLeft className="w-6 h-6 text-foreground" />
             </button>
           ) : (
-            <img src="/logo.jpg" alt="Kin Care" className="h-8" />
+            <AccountMenuLogo className="h-8" />
           )}
           {(showBack || title) && (
             <h1 className="text-lg font-extrabold text-foreground truncate">
