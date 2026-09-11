@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
-import { useLocation } from 'react-router-dom';
+import { useLocation, useNavigate } from 'react-router-dom';
 import { Mic, MicOff, X, Loader2, Volume2 } from 'lucide-react';
 import { useApp } from '@/context/AppContext';
 import { toast } from '@/hooks/use-toast';
@@ -25,15 +25,23 @@ const VoiceAssistantButton = () => {
   } = useApp();
 
   const location = useLocation();
+  const navigate = useNavigate();
 
   const [agentState, setAgentState] = useState<AgentState>('idle');
   const [showPanel, setShowPanel] = useState(false);
   const [responseText, setResponseText] = useState('');
   const [, setLastAction] = useState<AgentAction | null>(null);
+  const [manualInput, setManualInput] = useState('');
 
   // Multi-turn conversation state
   const convoStepRef = useRef<ConvoStep>(null);
   const convoQueueRef = useRef<ConvoStep[]>([]);
+
+  // True whenever the panel was opened proactively (greeting or a scheduled
+  // medicine reminder) rather than by the senior tapping the mic themselves
+  // — closing a proactive prompt should return them to the dashboard instead
+  // of just hiding the panel over whatever page they happened to be on.
+  const isProactiveRef = useRef(false);
 
   // Always-fresh ref so reminder timeouts read current medicine state, not stale closure
   const sharedMedicinesRef = useRef(sharedMedicines);
@@ -340,6 +348,7 @@ const VoiceAssistantButton = () => {
 
   const runGreeting = useCallback(() => {
     lastGreetedAtRef.current = Date.now();
+    isProactiveRef.current = true;
     const hour = new Date().getHours();
     const greet = language === 'en'
       ? (hour < 12 ? 'Good morning' : hour < 17 ? 'Good afternoon' : 'Good evening')
@@ -454,6 +463,7 @@ const VoiceAssistantButton = () => {
             : `ध्यान दें: ${medName} ${slot} बजे लेनी है। 15 मिनट बाकी हैं।`;
           scheduleReminder(r1Delay, () => {
             if (!isStillPending(med.id)) return;
+            isProactiveRef.current = true;
             setShowPanel(true);
             setResponseText(r1Msg);
             setAgentState('responding');
@@ -472,9 +482,13 @@ const VoiceAssistantButton = () => {
             : `अभी ${slot} बज गए हैं। ${medName} लेने का समय! क्या आपने ली?`;
           scheduleReminder(r2Delay, () => {
             if (!isStillPending(med.id)) return;
+            isProactiveRef.current = true;
             setShowPanel(true);
             setResponseText(r2Msg);
             setAgentState('responding');
+            // Route through the same 'medicine' convo handler the greeting flow
+            // uses, so a typed/tapped answer (not just speech) is understood.
+            convoStepRef.current = 'medicine';
             doSpeak(r2Msg, () => { startListening(); });
             toast({ title: r2Title, description: r2Msg, variant: 'destructive' });
 
@@ -503,9 +517,11 @@ const VoiceAssistantButton = () => {
             : `आपने अभी तक ${medName} नहीं ली। ${slot} बजे लेनी थी। कृपया अभी लें।`;
           scheduleReminder(r3Delay, () => {
             if (!isStillPending(med.id)) return;
+            isProactiveRef.current = true;
             setShowPanel(true);
             setResponseText(r3Msg);
             setAgentState('responding');
+            convoStepRef.current = 'medicine';
             doSpeak(r3Msg, () => { startListening(); });
             toast({ title: r3Title, description: r3Msg });
 
@@ -534,9 +550,11 @@ const VoiceAssistantButton = () => {
             : `ज़रूरी: ${medName} 20 मिनट से बाकी है! कृपया अभी लें।`;
           scheduleReminder(r4Delay, async () => {
             if (!isStillPending(med.id)) return;
+            isProactiveRef.current = true;
             setShowPanel(true);
             setResponseText(r4Msg);
             setAgentState('responding');
+            convoStepRef.current = 'medicine';
             doSpeak(r4Msg, () => { startListening(); });
             toast({ title: r4Title, description: r4Msg, variant: 'destructive' });
 
@@ -562,6 +580,7 @@ const VoiceAssistantButton = () => {
             : `${medName} 30 मिनट से नहीं ली गई। आपके देखभालकर्ता को सूचित कर दिया गया है।`;
           scheduleReminder(r5Delay, async () => {
             if (!isStillPending(med.id)) return;
+            isProactiveRef.current = true;
             setShowPanel(true);
             setResponseText(r5Msg);
             setAgentState('responding');
@@ -873,11 +892,15 @@ const VoiceAssistantButton = () => {
     if (agentState === 'listening') {
       stopListening();
     } else if (agentState === 'idle' || agentState === 'responding' || agentState === 'error') {
-      // Reset conversation state when user manually taps mic
+      // Reset conversation state when user manually taps mic — this is a
+      // one-off command, not a proactive question, so closing it afterward
+      // should just close the panel rather than navigating anywhere.
+      isProactiveRef.current = false;
       convoStepRef.current = null;
       convoQueueRef.current = [];
       setShowPanel(true);
       setResponseText('');
+      setManualInput('');
       setLastAction(null);
       startListening();
     }
@@ -885,6 +908,8 @@ const VoiceAssistantButton = () => {
 
   const handleClose = () => {
     stopListening();
+    const wasProactive = isProactiveRef.current;
+    isProactiveRef.current = false;
     convoStepRef.current = null;
     convoQueueRef.current = [];
     if (Capacitor.isNativePlatform()) {
@@ -895,8 +920,31 @@ const VoiceAssistantButton = () => {
     setShowPanel(false);
     setAgentState('idle');
     setResponseText('');
+    setManualInput('');
     setLastAction(null);
+
+    // Closing a proactive greeting/reminder — as opposed to a manually
+    // invoked one-off voice command — takes the senior to their dashboard
+    // instead of leaving the panel's underlying page as-is.
+    if (wasProactive && role === 'senior') {
+      navigate('/senior', { replace: true });
+    }
   };
+
+  // Typed or tapped answer — same effect as a recognized spoken transcript,
+  // for whenever speech recognition doesn't catch what was said.
+  const submitManualAnswer = useCallback((text: string) => {
+    const trimmed = text.trim();
+    if (!trimmed) return;
+    stopListening();
+    setManualInput('');
+    if (convoStepRef.current) {
+      handleConvoAnswer(trimmed);
+    } else {
+      handleTranscript(trimmed);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [handleConvoAnswer, stopListening]);
 
   // Only show for senior role
   if (role !== 'senior') return null;
@@ -965,6 +1013,50 @@ const VoiceAssistantButton = () => {
                     }}
                   />
                 ))}
+              </div>
+            )}
+
+            {/* Type or tap an answer — for when speech recognition doesn't catch it */}
+            {agentState === 'listening' && (
+              <div className="space-y-3 mb-4">
+                {convoStepRef.current === 'wellbeing' ? (
+                  <div className="flex gap-2">
+                    <button onClick={() => submitManualAnswer('good')} className="flex-1 py-3 rounded-xl bg-success text-success-foreground font-semibold text-sm">
+                      😊 {t('Good', 'अच्छा')}
+                    </button>
+                    <button onClick={() => submitManualAnswer('okay')} className="flex-1 py-3 rounded-xl bg-secondary text-secondary-foreground font-semibold text-sm">
+                      🙂 {t('Okay', 'ठीक')}
+                    </button>
+                    <button onClick={() => submitManualAnswer('not well')} className="flex-1 py-3 rounded-xl bg-destructive text-destructive-foreground font-semibold text-sm">
+                      😟 {t('Not Well', 'अच्छा नहीं')}
+                    </button>
+                  </div>
+                ) : convoStepRef.current ? (
+                  <div className="flex gap-3">
+                    <button onClick={() => submitManualAnswer('yes')} className="flex-1 py-3 rounded-xl bg-success text-success-foreground font-semibold">
+                      ✅ {t('Yes', 'हाँ')}
+                    </button>
+                    <button onClick={() => submitManualAnswer('no')} className="flex-1 py-3 rounded-xl bg-secondary text-secondary-foreground font-semibold">
+                      {t('Not Yet', 'अभी नहीं')}
+                    </button>
+                  </div>
+                ) : null}
+                <div className="flex gap-2">
+                  <input
+                    value={manualInput}
+                    onChange={(e) => setManualInput(e.target.value)}
+                    onKeyDown={(e) => { if (e.key === 'Enter') submitManualAnswer(manualInput); }}
+                    placeholder={t('Or type your answer...', 'या अपना जवाब लिखें...')}
+                    className="flex-1 px-4 py-3 rounded-xl border border-gray-200 text-base text-gray-800"
+                  />
+                  <button
+                    onClick={() => submitManualAnswer(manualInput)}
+                    disabled={!manualInput.trim()}
+                    className="px-4 py-3 rounded-xl gradient-primary text-white font-semibold disabled:opacity-40"
+                  >
+                    {t('Send', 'भेजें')}
+                  </button>
+                </div>
               </div>
             )}
 
